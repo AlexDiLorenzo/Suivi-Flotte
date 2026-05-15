@@ -1,0 +1,51 @@
+networks:
+  web:
+    external: true
+  flotte-net:
+    driver: bridge
+
+services:
+  flotte-api:
+    build: ./api
+    container_name: flotte-api
+    restart: unless-stopped
+    environment:
+      - DB_HOST=flotte-db
+      - DB_PORT=5432
+      - DB_NAME=${FL_DB_NAME:-flotte}
+      - DB_USER=${FL_DB_USER:-flotte}
+      - DB_PASSWORD=${FL_DB_PASSWORD}
+      - JWT_SECRET=${FL_JWT_SECRET}
+      - CORS_ORIGIN=https://flotte.alex-worksmart.com
+      - PORT=3000
+    expose: ["3000"]
+    networks: [flotte-net, web]
+    depends_on: [flotte-db]
+
+  flotte-db:
+    image: postgres:15-alpine
+    container_name: flotte-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${FL_DB_NAME:-flotte}
+      - POSTGRES_USER=${FL_DB_USER:-flotte}
+      - POSTGRES_PASSWORD=${FL_DB_PASSWORD}
+    volumes:
+      - /srv/flotte/postgres:/var/lib/postgresql/data
+    expose: ["5432"]
+    networks: [flotte-net]
+
+  flotte-front:
+    build: .
+    container_name: flotte-front
+    restart: unless-stopped
+    networks: [flotte-net, web]
+    depends_on: [flotte-api]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=web
+      - traefik.http.routers.flotte.rule=Host(`flotte.alex-worksmart.com`)
+      - traefik.http.routers.flotte.entrypoints=websecure
+      - traefik.http.routers.flotte.tls=true
+      - traefik.http.routers.flotte.tls.certresolver=le
+      - traefik.http.services.flotte.loadbalancer.server.port=80
