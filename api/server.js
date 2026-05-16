@@ -59,6 +59,8 @@ app.post("/api/auth/login", wrap(async (req, res) => {
 app.use("/api/categories", auth);
 app.use("/api/vehicles", auth);
 app.use("/api/interventions", auth);
+app.use("/api/presence", auth);
+app.use("/api/send-mail", auth);
 
 // ── Catégories ──────────────────────────────────────────────
 app.get("/api/categories", wrap(async (_req, res) => {
@@ -229,6 +231,138 @@ app.put("/api/interventions/:id", wrap(async (req, res) => {
 app.delete("/api/interventions/:id", wrap(async (req, res) => {
   await pool.query("DELETE FROM interventions WHERE id=$1", [req.params.id]);
   res.json({ ok: true });
+}));
+
+// ── Présence Pérols ─────────────────────────────────────────
+// Chauffeurs de l'équipe
+app.get("/api/presence/drivers", wrap(async (_req, res) => {
+  const { rows } = await pool.query("SELECT * FROM presence_drivers ORDER BY position, id");
+  res.json(rows);
+}));
+
+// Enregistrement en masse de l'équipe (création / renommage / suppression)
+app.put("/api/presence/drivers", wrap(async (req, res) => {
+  const drivers = Array.isArray(req.body) ? req.body : [];
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const keep = [];
+    for (let i = 0; i < drivers.length; i++) {
+      const d = drivers[i];
+      if (d.id) {
+        await client.query(
+          "UPDATE presence_drivers SET nom=$1, position=$2 WHERE id=$3",
+          [d.nom || "", i + 1, d.id]
+        );
+        keep.push(Number(d.id));
+      } else {
+        const { rows } = await client.query(
+          "INSERT INTO presence_drivers (nom, position) VALUES ($1,$2) RETURNING id",
+          [d.nom || "", i + 1]
+        );
+        keep.push(rows[0].id);
+      }
+    }
+    if (keep.length) {
+      await client.query("DELETE FROM presence_drivers WHERE id <> ALL($1::int[])", [keep]);
+    } else {
+      await client.query("DELETE FROM presence_drivers");
+    }
+    await client.query("COMMIT");
+    const { rows } = await client.query("SELECT * FROM presence_drivers ORDER BY position, id");
+    res.json(rows);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+// Lecture d'une semaine
+app.get("/api/presence/week/:weekStart", wrap(async (req, res) => {
+  const ws = req.params.weekStart;
+  const { rows: meta } = await pool.query(
+    "SELECT responsable FROM presence_weeks WHERE week_start=$1", [ws]
+  );
+  const { rows: entries } = await pool.query(
+    "SELECT * FROM presence_entries WHERE week_start=$1", [ws]
+  );
+  const map = {};
+  for (const e of entries) {
+    map[e.driver_id] = {
+      lun: e.lun, mar: e.mar, mer: e.mer, jeu: e.jeu,
+      ven: e.ven, sam: e.sam, dim: e.dim,
+    };
+  }
+  res.json({ responsable: meta[0]?.responsable || "", entries: map });
+}));
+
+// Enregistrement d'une semaine
+app.put("/api/presence/week/:weekStart", wrap(async (req, res) => {
+  const ws = req.params.weekStart;
+  const { responsable, entries } = req.body;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO presence_weeks (week_start, responsable) VALUES ($1,$2)
+       ON CONFLICT (week_start) DO UPDATE SET responsable=$2`,
+      [ws, responsable || ""]
+    );
+    await client.query("DELETE FROM presence_entries WHERE week_start=$1", [ws]);
+    for (const [driverId, c] of Object.entries(entries || {})) {
+      await client.query(
+        `INSERT INTO presence_entries
+           (week_start, driver_id, lun, mar, mer, jeu, ven, sam, dim)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          ws, Number(driverId), c.lun || "", c.mar || "", c.mer || "",
+          c.jeu || "", c.ven || "", c.sam || "", c.dim || "",
+        ]
+      );
+    }
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+// ── Envoi d'un tableau par email (Resend) ───────────────────
+app.post("/api/send-mail", wrap(async (req, res) => {
+  const { subject, html } = req.body;
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM;
+  const to = process.env.MAIL_TO || "compta@montpellierdepannage.com";
+  if (!apiKey || !from) {
+    return res.status(503).json({
+      error: "Envoi d'email non configuré sur le serveur (RESEND_API_KEY / RESEND_FROM manquants).",
+    });
+  }
+  try {
+    const r = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        from, to,
+        subject: subject || "Document — Flotte Montpellier Dépannage",
+        html: html || "",
+      }),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      console.error("Resend failed", r.status, detail);
+      return res.status(502).json({ error: "Échec de l'envoi de l'email." });
+    }
+    res.json({ ok: true, to });
+  } catch (err) {
+    console.error("Resend exception", err);
+    res.status(502).json({ error: "Échec de l'envoi de l'email." });
+  }
 }));
 
 // ── Gestion d'erreurs ───────────────────────────────────────

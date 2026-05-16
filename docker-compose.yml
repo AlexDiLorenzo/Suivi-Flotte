@@ -18,6 +18,9 @@ services:
       - JWT_SECRET=${FL_JWT_SECRET}
       - CORS_ORIGIN=https://flotte.alex-worksmart.com
       - PORT=3000
+      - RESEND_API_KEY=${FL_RESEND_API_KEY}
+      - RESEND_FROM=${FL_RESEND_FROM}
+      - MAIL_TO=${FL_MAIL_TO:-compta@montpellierdepannage.com}
     expose: ["3000"]
     networks: [flotte-net, web]
     depends_on: [flotte-db]

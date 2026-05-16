@@ -67,6 +67,30 @@ export async function initDB() {
       );
 
       CREATE INDEX IF NOT EXISTS idx_items_intervention ON intervention_items (intervention_id);
+
+      CREATE TABLE IF NOT EXISTS presence_drivers (
+        id SERIAL PRIMARY KEY,
+        nom TEXT NOT NULL DEFAULT '',
+        position INT NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS presence_weeks (
+        week_start TEXT PRIMARY KEY,
+        responsable TEXT NOT NULL DEFAULT ''
+      );
+
+      CREATE TABLE IF NOT EXISTS presence_entries (
+        week_start TEXT NOT NULL,
+        driver_id INT NOT NULL REFERENCES presence_drivers(id) ON DELETE CASCADE,
+        lun TEXT NOT NULL DEFAULT '',
+        mar TEXT NOT NULL DEFAULT '',
+        mer TEXT NOT NULL DEFAULT '',
+        jeu TEXT NOT NULL DEFAULT '',
+        ven TEXT NOT NULL DEFAULT '',
+        sam TEXT NOT NULL DEFAULT '',
+        dim TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (week_start, driver_id)
+      );
     `);
 
     // ── Seed reference data on first run ──────────────────────
@@ -125,6 +149,23 @@ export async function initDB() {
         throw err;
       }
     }
+
+    // ── Équipe Pérols par défaut (indépendant : fonctionne aussi
+    //    sur une base déjà créée avant l'ajout de la page Présence) ──
+    const { rowCount: driverRows } = await client.query("SELECT 1 FROM presence_drivers LIMIT 1");
+    if (driverRows === 0) {
+      const team = [
+        "BARAILLE", "CHIVAZ", "CADET", "CAMMAL", "FLACHERAR", "DUPONT",
+        "LARBI", "LAVENAIRE", "MACHURAT", "PEREZ", "RODRIGUEZ", "VIVIERS",
+      ];
+      for (let i = 0; i < team.length; i++) {
+        await client.query(
+          "INSERT INTO presence_drivers (nom, position) VALUES ($1,$2)",
+          [team[i], i + 1]
+        );
+      }
+    }
+
     console.log("Database initialized");
   } finally {
     client.release();

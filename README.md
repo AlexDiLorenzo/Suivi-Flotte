@@ -14,6 +14,10 @@ contrôles techniques et historique des interventions de chaque véhicule.
 - **Interventions** : date, kilométrage, mécanicien(s) et lignes de pièces
   (type, désignation, fournisseur, quantité, prix unitaire) avec total HT
   automatique. Ajout, modification, suppression.
+- **Présence Pérols** : feuille de présence hebdomadaire (gestion de l'équipe,
+  tableau NOM × jours avec codes de présence), enregistrement automatique.
+- **Impression** des tableaux (flotte et présence) et **envoi automatique** à
+  `compta@montpellierdepannage.com` (via Resend).
 - Connexion sécurisée (JWT), données partagées via PostgreSQL.
 
 ## Démarrage en local

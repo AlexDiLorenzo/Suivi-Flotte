@@ -34,8 +34,10 @@ No test runner or linter is configured.
 
 All logic and components are inline in `App.jsx`: `LoginScreen`, `FlotteApp`,
 `TopBar`, `Dashboard`, `VehicleModal`, `CategoryModal`, `VehicleDetail`,
-`InterventionModal`, `Modal`, `ConfirmDialog`, `ToastHost`. No router, no state
-library. Navigation is a `view` state object (`dashboard` ↔ `vehicle`).
+`InterventionModal`, `PresencePage`, `TeamModal`, `Modal`, `ConfirmDialog`,
+`ToastHost`. No router, no state library. Navigation is a `view` state object
+with three views: `dashboard`, `vehicle`, `presence` (the `TopBar` nav switches
+between the fleet dashboard and the Pérols presence sheet).
 
 - **`apiFetch()`** wraps `fetch`, injects the JWT, auto-logs-out on 401.
 - **Auth:** token in `localStorage` (`flotte-token` / `flotte-user`).
@@ -54,8 +56,10 @@ library. Navigation is a `view` state object (`dashboard` ↔ `vehicle`).
 - **`initDB()`** (`api/db.js`) creates tables and, on an empty DB, seeds
   reference data from `api/seedData.js`.
 - Tables: `users`, `categories`, `vehicles`, `interventions`,
-  `intervention_items`. `vehicles.ct_month`/`ct_day` store the recurring annual
-  CT planning (no year — it is a rolling annual schedule).
+  `intervention_items`, `presence_drivers`, `presence_weeks`,
+  `presence_entries`. `vehicles.ct_month`/`ct_day` store the recurring annual
+  CT planning (no year — it is a rolling annual schedule). Presence weeks are
+  keyed by `week_start` (the Monday, `YYYY-MM-DD`).
 - Endpoints:
   - `GET /api/auth/check`, `POST /api/auth/setup`, `POST /api/auth/login`
   - `GET/POST /api/categories`, `PUT/DELETE /api/categories/:id`
@@ -63,6 +67,20 @@ library. Navigation is a `view` state object (`dashboard` ↔ `vehicle`).
   - `GET /api/vehicles/:id/interventions`
   - `POST /api/interventions`, `PUT/DELETE /api/interventions/:id`
     (PUT/POST replace the full `intervention_items` set transactionally)
+  - `GET/PUT /api/presence/drivers` (PUT = bulk replace of the team)
+  - `GET/PUT /api/presence/week/:weekStart` (week grid + responsable)
+  - `POST /api/send-mail` — emails an HTML table to `MAIL_TO`
+    (default `compta@montpellierdepannage.com`) via Resend
+
+### Print & email
+
+Both tables (fleet dashboard, presence sheet) have a print button (`doPrint()`
+sets `@page` orientation, then `window.print()`; `.no-print` / `.print-area` /
+`.tablewrap` rules in `index.css`) and a "send to compta" button. The email HTML
+is built client-side (`buildFleetEmailHtml` / `buildPresenceEmailHtml`) and
+posted to `POST /api/send-mail`, which relays it through Resend. If
+`RESEND_API_KEY` / `RESEND_FROM` are unset the endpoint returns 503 and printing
+still works.
 
 ### `api/seedData.js`
 
@@ -75,7 +93,8 @@ re-parsing the Excel files; do not hand-edit unless the source files change.
 3 containers: `flotte-front` (nginx SPA + `/api/` proxy), `flotte-api` (Node 20),
 `flotte-db` (Postgres 15, data at `/srv/flotte/postgres`). Traefik labels on
 `flotte-front` expose `flotte.alex-worksmart.com` with auto TLS. Secrets via
-`.env` on the VPS: `FL_DB_PASSWORD`, `FL_JWT_SECRET`.
+`.env` on the VPS: `FL_DB_PASSWORD`, `FL_JWT_SECRET`, and (for email)
+`FL_RESEND_API_KEY`, `FL_RESEND_FROM`, `FL_MAIL_TO`.
 
 ## Color scheme (Montpellier Dépannage Design System)
 

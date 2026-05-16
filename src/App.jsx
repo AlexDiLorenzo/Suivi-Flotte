@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, createContext, useContext } from 'react'
+import React, { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext } from 'react'
 
 /* ════════════════════════════════════════════════════════════
    Constantes & thème — Design System Montpellier Dépannage
@@ -35,6 +35,25 @@ const CATEGORY_PALETTE = ['#F4C7D9', '#F2EAB6', '#C9B8DC', '#F2D2A9', '#B7D7E8',
   '#C6E0B4', '#E8E4A0', '#F9E79F', '#BFE6C4', '#AEC8E8']
 
 const CURRENT_MONTH = new Date().getMonth() + 1
+
+// Présence Pérols
+const DAYS = ['LUN', 'MAR', 'MER', 'JEU', 'VEN', 'SAM', 'DIM']
+const DAY_KEYS = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim']
+const PRESENCE_CODES = [
+  { code: 'P', meaning: 'Présent', bg: '#C6E0B4' },
+  { code: 'P/AS', meaning: 'Présent + astreinte', bg: '#94CC7E' },
+  { code: 'AS', meaning: 'Astreinte', bg: '#B7D7E8' },
+  { code: 'AS/RJ', meaning: 'Astreinte + repos journalier', bg: '#AEC8E8' },
+  { code: 'AS/CP', meaning: 'Astreinte + congé payé', bg: '#C9B8DC' },
+  { code: 'RJ', meaning: 'Repos journalier', bg: '#ECEBE3' },
+  { code: 'R', meaning: 'Repos', bg: '#D3D1C7' },
+  { code: 'CP', meaning: 'Congé payé', bg: '#F9E79F' },
+  { code: 'AM', meaning: 'Arrêt maladie', bg: '#F4C7D9' },
+  { code: 'AT', meaning: 'Accident de travail', bg: '#E59A9A' },
+  { code: 'Férié', meaning: 'Jour férié', bg: '#F2D2A9' },
+]
+const CODE_BG = Object.fromEntries(PRESENCE_CODES.map((c) => [c.code, c.bg]))
+const MAIL_TO = 'compta@montpellierdepannage.com'
 
 /* ════════════════════════════════════════════════════════════
    API
@@ -87,6 +106,106 @@ function itemTotal(it) {
 }
 function interventionTotal(iv) {
   return (iv.items || []).reduce((s, it) => s + itemTotal(it), 0)
+}
+
+/* Dates — semaine du lundi */
+function mondayOf(d) {
+  const x = new Date(d)
+  const shift = (x.getDay() + 6) % 7
+  x.setDate(x.getDate() - shift)
+  x.setHours(12, 0, 0, 0)
+  return x
+}
+function addDays(d, n) {
+  const x = new Date(d)
+  x.setDate(x.getDate() + n)
+  return x
+}
+function ymd(d) {
+  const x = new Date(d)
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
+}
+function ddmm(d) {
+  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+function isoWeek(d) {
+  const x = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
+  const day = (x.getUTCDay() + 6) % 7
+  x.setUTCDate(x.getUTCDate() - day + 3)
+  const firstThu = new Date(Date.UTC(x.getUTCFullYear(), 0, 4))
+  const ftDay = (firstThu.getUTCDay() + 6) % 7
+  firstThu.setUTCDate(firstThu.getUTCDate() - ftDay + 3)
+  return 1 + Math.round((x - firstThu) / (7 * 864e5))
+}
+
+/* Impression — règle l'orientation puis lance la boîte d'impression */
+function doPrint(orientation = 'portrait') {
+  const style = document.createElement('style')
+  style.textContent = `@page { size: ${orientation}; margin: 10mm; }`
+  document.head.appendChild(style)
+  window.print()
+  setTimeout(() => style.remove(), 800)
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
+}
+
+/* HTML email — tableau de présence */
+function buildPresenceEmailHtml({ weekNum, range, responsable, drivers, grid, dayDates }) {
+  const th = 'padding:6px 8px;border:1px solid #999;background:#2C6126;color:#fff;font-size:12px'
+  const td = 'padding:6px 8px;border:1px solid #bbb;font-size:12px'
+  const head = `<tr><th style="${th};text-align:left">NOM</th>` +
+    DAYS.map((d, i) => `<th style="${th}">${d}<br><span style="font-weight:400">${ddmm(dayDates[i])}</span></th>`).join('') +
+    '</tr>'
+  const body = drivers.map((dr) => {
+    const row = grid[dr.id] || {}
+    return `<tr><td style="${td};font-weight:600">${esc(dr.nom)}</td>` +
+      DAY_KEYS.map((k) => {
+        const v = row[k] || ''
+        const bg = CODE_BG[v] || '#fff'
+        return `<td style="${td};text-align:center;background:${bg}">${esc(v)}</td>`
+      }).join('') + '</tr>'
+  }).join('')
+  const legend = PRESENCE_CODES.map((c) =>
+    `<span style="display:inline-block;margin:2px 8px 2px 0"><b>${c.code}</b> = ${c.meaning}</span>`).join('')
+  return `<div style="font-family:Arial,sans-serif;color:#1A190F">
+    <h2 style="margin:0 0 4px">Présence Pérols — Semaine ${weekNum}</h2>
+    <p style="margin:0 0 2px;color:#555">${range}</p>
+    <p style="margin:0 0 12px">Responsable : <b>${esc(responsable) || '—'}</b></p>
+    <table style="border-collapse:collapse">${head}${body}</table>
+    <p style="margin:14px 0 0;font-size:11px;color:#555">${legend}</p>
+  </div>`
+}
+
+/* HTML email — planning de la flotte */
+function buildFleetEmailHtml(categories, vehicles) {
+  const th = 'padding:6px 8px;border:1px solid #999;background:#2C6126;color:#fff;font-size:11px'
+  const td = 'padding:5px 7px;border:1px solid #ccc;font-size:11px'
+  const head = `<tr><th style="${th};text-align:left">Marque</th><th style="${th};text-align:left">Modèle</th>` +
+    `<th style="${th};text-align:left">Immatriculation</th><th style="${th}">1ère MEC</th>` +
+    MONTHS_SHORT.map((m) => `<th style="${th}">${m}</th>`).join('') + '</tr>'
+  let body = ''
+  for (const cat of categories) {
+    const list = vehicles.filter((v) => v.category_id === cat.id)
+    body += `<tr><td colspan="16" style="${td};background:${cat.color};font-weight:700">${esc(cat.name)}</td></tr>`
+    for (const v of list) {
+      body += `<tr><td style="${td}">${esc(v.marque)}</td><td style="${td}">${esc(v.modele)}</td>` +
+        `<td style="${td}">${esc(v.immatriculation)}</td><td style="${td};text-align:center">${esc(v.date_mec)}</td>` +
+        MONTHS_SHORT.map((_, i) =>
+          `<td style="${td};text-align:center">${v.ct_month === i + 1 ? (v.ct_day || '•') : ''}</td>`).join('') +
+        '</tr>'
+    }
+  }
+  return `<div style="font-family:Arial,sans-serif;color:#1A190F">
+    <h2 style="margin:0 0 4px">Planning CT — Flotte Montpellier Dépannage</h2>
+    <p style="margin:0 0 12px;color:#555">${vehicles.length} véhicules · le chiffre indique le jour du contrôle technique</p>
+    <table style="border-collapse:collapse">${head}${body}</table>
+  </div>`
+}
+
+async function sendMail(subject, html) {
+  return apiFetch('/send-mail', { method: 'POST', body: JSON.stringify({ subject, html }) })
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -318,10 +437,15 @@ function FlotteApp({ user, onLogout }) {
 
   const goVehicle = (id) => setView({ name: 'vehicle', id })
   const goDashboard = () => setView({ name: 'dashboard' })
+  const goPresence = () => setView({ name: 'presence' })
+  const active = view.name === 'presence' ? 'presence' : 'dashboard'
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <TopBar user={user} onLogout={onLogout} onHome={goDashboard} />
+      <TopBar
+        user={user} onLogout={onLogout} active={active}
+        onNav={(n) => (n === 'presence' ? goPresence() : goDashboard())}
+      />
       <div style={{ flex: 1, padding: '24px clamp(14px, 3vw, 36px) 60px' }}>
         {loading ? (
           <div style={{ textAlign: 'center', color: C.muted, padding: 80, fontSize: 15 }}>
@@ -332,26 +456,35 @@ function FlotteApp({ user, onLogout }) {
             categories={categories} vehicles={vehicles}
             onOpenVehicle={goVehicle} reload={loadData}
           />
-        ) : (
+        ) : view.name === 'vehicle' ? (
           <VehicleDetail
             vehicleId={view.id} categories={categories}
             onBack={goDashboard} reloadFleet={loadData}
           />
+        ) : (
+          <PresencePage />
         )}
       </div>
     </div>
   )
 }
 
-function TopBar({ user, onLogout, onHome }) {
+function TopBar({ user, onLogout, active, onNav }) {
+  const navBtn = (id, label) => (
+    <button onClick={() => onNav(id)} style={{
+      border: 'none', borderRadius: 8, padding: '7px 14px', fontSize: 13.5, fontWeight: 600,
+      background: active === id ? C.green : 'transparent',
+      color: active === id ? '#fff' : C.muted,
+    }}>{label}</button>
+  )
   return (
-    <header style={{
+    <header className="no-print" style={{
       background: C.panel, borderBottom: `1px solid ${C.border}`,
       padding: '12px clamp(14px, 3vw, 36px)', display: 'flex',
-      alignItems: 'center', justifyContent: 'space-between',
-      position: 'sticky', top: 0, zIndex: 50,
+      alignItems: 'center', justifyContent: 'space-between', gap: 16,
+      position: 'sticky', top: 0, zIndex: 50, flexWrap: 'wrap',
     }}>
-      <button onClick={onHome} style={{
+      <button onClick={() => onNav('dashboard')} style={{
         border: 'none', background: 'none', display: 'flex',
         alignItems: 'center', gap: 11, padding: 0,
       }}>
@@ -361,6 +494,10 @@ function TopBar({ user, onLogout, onHome }) {
           <div style={{ fontSize: 11.5, color: C.muted }}>Montpellier Dépannage</div>
         </div>
       </button>
+      <nav style={{ display: 'flex', gap: 4, background: C.bg, padding: 4, borderRadius: 11 }}>
+        {navBtn('dashboard', 'Tableau de bord')}
+        {navBtn('presence', 'Présence Pérols')}
+      </nav>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
         <span style={{ fontSize: 13.5, color: C.muted }}>
           Connecté : <strong style={{ color: C.ink }}>{user}</strong>
@@ -379,6 +516,23 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
   const [search, setSearch] = useState('')
   const [vehicleModal, setVehicleModal] = useState(null) // { categoryId } | { vehicle }
   const [categoryModal, setCategoryModal] = useState(null) // { } new | { category }
+  const [sendConfirm, setSendConfirm] = useState(false)
+  const [sending, setSending] = useState(false)
+
+  const sendFleet = async () => {
+    setSending(true)
+    try {
+      await sendMail(
+        'Planning CT — Flotte Montpellier Dépannage',
+        buildFleetEmailHtml(categories, vehicles)
+      )
+      notify(`Planning envoyé à ${MAIL_TO}`, 'success')
+    } catch (err) {
+      notify(err.message, 'error')
+    } finally {
+      setSending(false)
+    }
+  }
 
   const q = search.trim().toLowerCase()
   const matches = (v) =>
@@ -406,19 +560,24 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
       </div>
 
       {/* Barre d'outils */}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+      <div className="no-print" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
         <input
           placeholder="Rechercher (marque, modèle, immatriculation)…"
           value={search} onChange={(e) => setSearch(e.target.value)}
-          style={{ ...S.input, maxWidth: 360 }}
+          style={{ ...S.input, maxWidth: 320 }}
         />
         {q && <span style={{ fontSize: 13, color: C.muted }}>{totalShown} résultat(s)</span>}
         <div style={{ flex: 1 }} />
         <button style={S.btn} onClick={() => setCategoryModal({})}>+ Catégorie</button>
+        <button style={S.btn} onClick={() => doPrint('landscape')}>🖨 Imprimer</button>
+        <button style={{ ...S.btn, ...S.btnPrimary }} disabled={sending}
+          onClick={() => setSendConfirm(true)}>
+          {sending ? 'Envoi…' : '✉ Envoyer à la compta'}
+        </button>
       </div>
 
       {/* Tableau */}
-      <div style={{
+      <div className="tablewrap" style={{
         background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12,
         overflow: 'auto', boxShadow: '0 1px 3px rgba(0,0,0,.04)',
       }}>
@@ -460,9 +619,9 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
                           {(byCategory[cat.id] || []).length} véhicule(s)
                         </span>
                         <div style={{ flex: 1 }} />
-                        <button onClick={() => setCategoryModal({ category: cat })}
+                        <button className="no-print" onClick={() => setCategoryModal({ category: cat })}
                           style={miniBtn} title="Modifier la catégorie">✎</button>
-                        <button onClick={() => setVehicleModal({ categoryId: cat.id })}
+                        <button className="no-print" onClick={() => setVehicleModal({ categoryId: cat.id })}
                           style={{ ...miniBtn, fontWeight: 700 }}>+ Véhicule</button>
                       </div>
                     </td>
@@ -522,7 +681,7 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
       </div>
 
       {/* Légende */}
-      <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 12, fontSize: 12.5, color: C.muted }}>
+      <div className="no-print" style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 12, fontSize: 12.5, color: C.muted }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 22, height: 16, background: C.green, borderRadius: 4, display: 'inline-block' }} />
           Jour du contrôle technique
@@ -548,6 +707,12 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
           category={categoryModal.category}
           onClose={() => setCategoryModal(null)}
           onSaved={() => { setCategoryModal(null); reload() }}
+        />
+      )}
+      {sendConfirm && (
+        <ConfirmDialog
+          message={`Envoyer le planning CT de la flotte (${vehicles.length} véhicules) à ${MAIL_TO} ?`}
+          confirmLabel="Envoyer" onConfirm={sendFleet} onClose={() => setSendConfirm(false)}
         />
       )}
     </div>
@@ -1191,6 +1356,267 @@ const cellEdit = { padding: 4, borderBottom: `1px solid ${C.borderSoft}` }
 const inSm = {
   width: '100%', padding: '7px 8px', borderRadius: 6, border: `1px solid ${C.border}`,
   fontSize: 13, background: '#fff', color: C.ink, outline: 'none',
+}
+
+/* ════════════════════════════════════════════════════════════
+   Présence Pérols — feuille de présence hebdomadaire
+   ════════════════════════════════════════════════════════════ */
+function PresencePage() {
+  const notify = useToast()
+  const [monday, setMonday] = useState(() => mondayOf(new Date()))
+  const weekStart = ymd(monday)
+  const weekNum = isoWeek(monday)
+  const dayDates = DAY_KEYS.map((_, i) => addDays(monday, i))
+  const range = `du ${ddmm(dayDates[0])} au ${ddmm(dayDates[6])} ${dayDates[6].getFullYear()}`
+
+  const [drivers, setDrivers] = useState([])
+  const [responsable, setResponsable] = useState('')
+  const [grid, setGrid] = useState({})
+  const [loading, setLoading] = useState(true)
+  const [teamModal, setTeamModal] = useState(false)
+  const [saveState, setSaveState] = useState('saved') // 'saving' | 'saved'
+  const [sendConfirm, setSendConfirm] = useState(false)
+  const [sending, setSending] = useState(false)
+  const skipSave = useRef(true)
+
+  // Chargement de la semaine
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+    skipSave.current = true
+    Promise.all([apiFetch('/presence/drivers'), apiFetch('/presence/week/' + weekStart)])
+      .then(([drv, wk]) => {
+        if (!alive) return
+        setDrivers(drv)
+        setResponsable(wk.responsable || '')
+        setGrid(wk.entries || {})
+      })
+      .catch((err) => { if (alive) notify(err.message, 'error') })
+      .finally(() => {
+        if (!alive) return
+        setLoading(false)
+        setSaveState('saved')
+        setTimeout(() => { skipSave.current = false }, 0)
+      })
+    return () => { alive = false }
+  }, [weekStart, notify])
+
+  // Enregistrement automatique (anti-rebond 700 ms)
+  useEffect(() => {
+    if (skipSave.current || loading) return
+    setSaveState('saving')
+    const t = setTimeout(async () => {
+      try {
+        const entries = {}
+        for (const d of drivers) entries[d.id] = grid[d.id] || {}
+        await apiFetch('/presence/week/' + weekStart, {
+          method: 'PUT',
+          body: JSON.stringify({ responsable, entries }),
+        })
+        setSaveState('saved')
+      } catch (err) {
+        notify(err.message, 'error')
+      }
+    }, 700)
+    return () => clearTimeout(t)
+  }, [responsable, grid, drivers, weekStart, loading, notify])
+
+  const setCell = (driverId, dayKey, value) =>
+    setGrid((g) => ({ ...g, [driverId]: { ...(g[driverId] || {}), [dayKey]: value } }))
+
+  const send = async () => {
+    setSending(true)
+    try {
+      await sendMail(
+        `Présence Pérols — Semaine ${weekNum}`,
+        buildPresenceEmailHtml({ weekNum, range, responsable, drivers, grid, dayDates })
+      )
+      notify(`Tableau envoyé à ${MAIL_TO}`, 'success')
+    } catch (err) {
+      notify(err.message, 'error')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+      {/* Barre d'outils */}
+      <div className="no-print" style={{
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16,
+      }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button style={S.btn} onClick={() => setMonday((m) => mondayOf(addDays(m, -7)))}>◀</button>
+          <button style={S.btn} onClick={() => setMonday(mondayOf(new Date()))}>Cette semaine</button>
+          <button style={S.btn} onClick={() => setMonday((m) => mondayOf(addDays(m, 7)))}>▶</button>
+        </div>
+        <span style={{ fontSize: 13, color: C.muted }}>
+          {saveState === 'saving' ? 'Enregistrement…' : 'Enregistré ✓'}
+        </span>
+        <div style={{ flex: 1 }} />
+        <button style={S.btn} onClick={() => setTeamModal(true)}>👥 Gérer l'équipe</button>
+        <button style={S.btn} onClick={() => doPrint('portrait')}>🖨 Imprimer</button>
+        <button style={{ ...S.btn, ...S.btnPrimary }} disabled={sending || loading}
+          onClick={() => setSendConfirm(true)}>
+          {sending ? 'Envoi…' : '✉ Envoyer à la compta'}
+        </button>
+      </div>
+
+      {/* Zone imprimable */}
+      <div className="print-area" style={{
+        background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: '22px 24px',
+      }}>
+        <h1 style={{ fontFamily: FONT_HEAD, fontSize: 22, fontWeight: 700 }}>
+          PRÉSENCE PÉROLS — SEMAINE {weekNum}
+        </h1>
+        <p style={{ fontSize: 14, color: C.muted, marginTop: 2 }}>{range}</p>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '16px 0 14px', flexWrap: 'wrap' }}>
+          <label style={{ ...S.label, marginBottom: 0 }}>Nom du responsable</label>
+          <input value={responsable} onChange={(e) => setResponsable(e.target.value)}
+            placeholder="Responsable d'équipe" style={{ ...S.input, maxWidth: 260 }} />
+          <span style={{ fontSize: 13, color: C.muted }}>Signature : ______________________</span>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>Chargement…</div>
+        ) : drivers.length === 0 ? (
+          <div style={{
+            padding: 36, textAlign: 'center', color: C.muted,
+            border: `1px dashed ${C.border}`, borderRadius: 10,
+          }}>
+            Aucun chauffeur. Cliquez sur « Gérer l'équipe » pour renseigner votre équipe.
+          </div>
+        ) : (
+          <div className="tablewrap" style={{ overflowX: 'auto' }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 620, fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <th style={{ ...thBase, textAlign: 'left', minWidth: 150 }}>NOM</th>
+                  {DAYS.map((d, i) => (
+                    <th key={d} style={{ ...thBase, minWidth: 80 }}>
+                      {d}<br />
+                      <span style={{ fontWeight: 400, fontSize: 10.5 }}>{ddmm(dayDates[i])}</span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {drivers.map((dr) => (
+                  <tr key={dr.id}>
+                    <td style={{ ...tdBase, fontWeight: 600 }}>{dr.nom}</td>
+                    {DAY_KEYS.map((k) => {
+                      const v = (grid[dr.id] || {})[k] || ''
+                      return (
+                        <td key={k} style={{ ...tdBase, padding: 3, textAlign: 'center' }}>
+                          <select value={v} onChange={(e) => setCell(dr.id, k, e.target.value)}
+                            style={{
+                              width: '100%', padding: '6px 2px', borderRadius: 6, fontSize: 13,
+                              fontWeight: 600, border: `1px solid ${C.border}`,
+                              textAlign: 'center', textAlignLast: 'center',
+                              background: CODE_BG[v] || '#fff', color: C.ink,
+                            }}>
+                            <option value="">—</option>
+                            {PRESENCE_CODES.map((c) => (
+                              <option key={c.code} value={c.code}>{c.code}</option>
+                            ))}
+                          </select>
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Légende */}
+        <div style={{ marginTop: 16 }}>
+          <div style={S.label}>Légende</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {PRESENCE_CODES.map((c) => (
+              <span key={c.code} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12,
+                background: c.bg, padding: '3px 9px', borderRadius: 20,
+              }}>
+                <strong>{c.code}</strong> {c.meaning}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {teamModal && (
+        <TeamModal drivers={drivers} onClose={() => setTeamModal(false)}
+          onSaved={(newList) => {
+            setTeamModal(false)
+            setDrivers(newList)
+            setGrid((g) => {
+              const ids = new Set(newList.map((d) => String(d.id)))
+              const next = {}
+              for (const k of Object.keys(g)) if (ids.has(String(k))) next[k] = g[k]
+              return next
+            })
+            notify('Équipe mise à jour', 'success')
+          }} />
+      )}
+      {sendConfirm && (
+        <ConfirmDialog
+          message={`Envoyer le tableau de présence de la semaine ${weekNum} à ${MAIL_TO} ?`}
+          confirmLabel="Envoyer" onConfirm={send} onClose={() => setSendConfirm(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+function TeamModal({ drivers, onClose, onSaved }) {
+  const notify = useToast()
+  const [list, setList] = useState(() => drivers.map((d) => ({ id: d.id, nom: d.nom })))
+  const [busy, setBusy] = useState(false)
+
+  const save = async () => {
+    const clean = list.filter((d) => d.nom.trim()).map((d) => ({ id: d.id, nom: d.nom.trim() }))
+    setBusy(true)
+    try {
+      const saved = await apiFetch('/presence/drivers', {
+        method: 'PUT', body: JSON.stringify(clean),
+      })
+      onSaved(saved)
+    } catch (err) {
+      notify(err.message, 'error')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="Équipe de Pérols" onClose={onClose} width={440}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <p style={{ fontSize: 13, color: C.muted, marginBottom: 4 }}>
+          Ajoutez, renommez ou retirez les chauffeurs de l'équipe.
+        </p>
+        {list.map((d, i) => (
+          <div key={i} style={{ display: 'flex', gap: 8 }}>
+            <input style={S.input} value={d.nom} placeholder="Nom du chauffeur"
+              onChange={(e) => setList((l) => l.map((x, j) =>
+                j === i ? { ...x, nom: e.target.value.toUpperCase() } : x))} />
+            <button style={{ ...S.btn, ...S.btnDanger, padding: '9px 13px' }}
+              onClick={() => setList((l) => l.filter((_, j) => j !== i))}>×</button>
+          </div>
+        ))}
+        <button style={S.btn} onClick={() => setList((l) => [...l, { nom: '' }])}>
+          + Ajouter un chauffeur
+        </button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
+          <button style={S.btn} onClick={onClose}>Annuler</button>
+          <button style={{ ...S.btn, ...S.btnPrimary }} disabled={busy} onClick={save}>
+            {busy ? '…' : 'Enregistrer l\'équipe'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
 }
 
 /* ════════════════════════════════════════════════════════════
