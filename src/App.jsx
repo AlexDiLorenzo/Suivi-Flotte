@@ -23,8 +23,6 @@ const C = {
 const FONT_HEAD = "'Space Mono', monospace"
 const FONT_MONO = "'JetBrains Mono', monospace"
 
-const MONTHS = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
-  'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre']
 const MONTHS_SHORT = ['JAN', 'FÉV', 'MARS', 'AVR', 'MAI', 'JUIN',
   'JUIL', 'AOÛT', 'SEP', 'OCT', 'NOV', 'DÉC']
 
@@ -154,13 +152,27 @@ function ageYears(dateMec) {
   if (!d) return null
   return (Date.now() - d.getTime()) / (365.25 * 864e5)
 }
-/* Prochaine occurrence du CT — planning annuel glissant (sans année) */
-function nextCtDate(month, day) {
-  const today = startOfToday()
-  let d = new Date(today.getFullYear(), month - 1, day || 1)
-  if (d < today) d = new Date(today.getFullYear() + 1, month - 1, day || 1)
-  return d
+/* Date ISO 'AAAA-MM-JJ' → objet Date (ou null si invalide) */
+function parseIsoDate(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || '').trim())
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null
 }
+/* Échéance du contrôle technique : date + jours restants */
+function ctInfo(ctDate) {
+  const d = parseIsoDate(ctDate)
+  if (!d) return null
+  return { date: d, days: Math.round((d - startOfToday()) / 864e5) }
+}
+/* Couleur et libellé d'urgence selon les jours restants */
+function ctTone(days) {
+  if (days < 0) return { color: C.red, label: 'Dépassé' }
+  if (days <= 30) return { color: C.red, label: 'J-' + days }
+  if (days <= 90) return { color: '#9A6B00', label: 'J-' + days }
+  return { color: C.green, label: 'J-' + days }
+}
+/* Tri par échéance CT — la plus proche d'abord, sans date en dernier */
+const ctSort = (a, b) =>
+  (a.ct_date || '9999-99-99').localeCompare(b.ct_date || '9999-99-99')
 
 /* Impression — règle l'orientation puis lance la boîte d'impression */
 function doPrint(orientation = 'portrait') {
@@ -204,26 +216,30 @@ function buildPresenceEmailHtml({ weekNum, range, responsable, drivers, grid, da
 
 /* HTML email — planning de la flotte */
 function buildFleetEmailHtml(categories, vehicles) {
-  const th = 'padding:6px 8px;border:1px solid #999;background:#2C6126;color:#fff;font-size:11px'
+  const th = 'padding:6px 8px;border:1px solid #999;background:#2C6126;color:#fff;font-size:11px;text-align:left'
   const td = 'padding:5px 7px;border:1px solid #ccc;font-size:11px'
-  const head = `<tr><th style="${th};text-align:left">Marque</th><th style="${th};text-align:left">Modèle</th>` +
-    `<th style="${th};text-align:left">Immatriculation</th><th style="${th}">1ère MEC</th>` +
-    MONTHS_SHORT.map((m) => `<th style="${th}">${m}</th>`).join('') + '</tr>'
+  const ctBg = (days) => (days <= 30 ? '#F4C7D9' : days <= 90 ? '#F2D2A9' : '#C6E0B4')
+  const head = '<tr>' +
+    ['Marque', 'Modèle', 'Immatriculation', '1ère MEC', 'Prochain CT']
+      .map((h) => `<th style="${th}">${h}</th>`).join('') + '</tr>'
   let body = ''
   for (const cat of categories) {
-    const list = vehicles.filter((v) => v.category_id === cat.id)
-    body += `<tr><td colspan="16" style="${td};background:${cat.color};font-weight:700">${esc(cat.name)}</td></tr>`
+    const list = vehicles.filter((v) => v.category_id === cat.id).sort(ctSort)
+    body += `<tr><td colspan="5" style="${td};background:${cat.color};font-weight:700">${esc(cat.name)}</td></tr>`
     for (const v of list) {
+      const info = ctInfo(v.ct_date)
+      const ctCell = info
+        ? `<td style="${td};background:${ctBg(info.days)};white-space:nowrap">` +
+          `${formatDate(v.ct_date)} — ${esc(ctTone(info.days).label)}</td>`
+        : `<td style="${td};color:#888">—</td>`
       body += `<tr><td style="${td}">${esc(v.marque)}</td><td style="${td}">${esc(v.modele)}</td>` +
-        `<td style="${td}">${esc(v.immatriculation)}</td><td style="${td};text-align:center">${esc(v.date_mec)}</td>` +
-        MONTHS_SHORT.map((_, i) =>
-          `<td style="${td};text-align:center">${v.ct_month === i + 1 ? (v.ct_day || '•') : ''}</td>`).join('') +
-        '</tr>'
+        `<td style="${td}">${esc(v.immatriculation)}</td>` +
+        `<td style="${td};text-align:center">${esc(v.date_mec)}</td>${ctCell}</tr>`
     }
   }
   return `<div style="font-family:Arial,sans-serif;color:#1A190F">
     <h2 style="margin:0 0 4px">Planning CT — Flotte Montpellier Dépannage</h2>
-    <p style="margin:0 0 12px;color:#555">${vehicles.length} véhicules · le chiffre indique le jour du contrôle technique</p>
+    <p style="margin:0 0 12px;color:#555">${vehicles.length} véhicules · date du prochain contrôle technique</p>
     <table style="border-collapse:collapse">${head}${body}</table>
   </div>`
 }
@@ -536,6 +552,22 @@ function TopBar({ user, onLogout, active, onNav }) {
   )
 }
 
+/* Cellule d'échéance CT — date + pastille J-xx colorée */
+function CtCell({ ctDate }) {
+  const info = ctInfo(ctDate)
+  if (!info) return <span style={{ color: C.muted }}>—</span>
+  const tone = ctTone(info.days)
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      <span style={{ fontFamily: FONT_MONO }}>{formatDate(ctDate)}</span>
+      <span style={{
+        fontFamily: FONT_MONO, fontWeight: 700, fontSize: 11, color: '#fff',
+        background: tone.color, padding: '2px 7px', borderRadius: 20, whiteSpace: 'nowrap',
+      }}>{tone.label}</span>
+    </span>
+  )
+}
+
 /* ════════════════════════════════════════════════════════════
    Tableau de bord — le grand planning de la flotte
    ════════════════════════════════════════════════════════════ */
@@ -597,7 +629,7 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
         {q && <span style={{ fontSize: 13, color: C.muted }}>{totalShown} résultat(s)</span>}
         <div style={{ flex: 1 }} />
         <button style={S.btn} onClick={() => setCategoryModal({})}>+ Catégorie</button>
-        <button style={S.btn} onClick={() => doPrint('landscape')}>🖨 Imprimer</button>
+        <button style={S.btn} onClick={() => doPrint('portrait')}>🖨 Imprimer</button>
         <button style={{ ...S.btn, ...S.btnPrimary }} disabled={sending}
           onClick={() => setSendConfirm(true)}>
           {sending ? 'Envoi…' : '✉ Envoyer à la compta'}
@@ -609,32 +641,25 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
         background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12,
         overflow: 'auto', boxShadow: '0 1px 3px rgba(0,0,0,.04)',
       }}>
-        <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1080, fontSize: 13 }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 640, fontSize: 13 }}>
           <thead>
             <tr>
-              {['Marque', 'Modèle', 'Immatriculation', '1ère MEC'].map((h, i) => (
+              {['Marque', 'Modèle', 'Immatriculation', '1ère MEC', 'Prochain CT'].map((h, i) => (
                 <th key={h} style={{
-                  ...thBase, textAlign: 'left', minWidth: [120, 140, 150, 100][i],
+                  ...thBase, textAlign: 'left', minWidth: [120, 140, 150, 100, 190][i],
                   position: 'sticky', top: 0, zIndex: 2,
                 }}>{h}</th>
-              ))}
-              {MONTHS_SHORT.map((m, i) => (
-                <th key={m} style={{
-                  ...thBase, width: 46, minWidth: 46,
-                  background: i + 1 === CURRENT_MONTH ? C.yellow : '#EDECE4',
-                  position: 'sticky', top: 0, zIndex: 2,
-                }}>{m}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {categories.map((cat) => {
-              const list = (byCategory[cat.id] || []).filter(matches)
+              const list = (byCategory[cat.id] || []).filter(matches).sort(ctSort)
               if (q && list.length === 0) return null
               return (
                 <React.Fragment key={cat.id}>
                   <tr>
-                    <td colSpan={16} style={{
+                    <td colSpan={5} style={{
                       background: cat.color, padding: '8px 12px',
                       borderTop: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`,
                     }}>
@@ -655,7 +680,7 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
                     </td>
                   </tr>
                   {list.length === 0 ? (
-                    <tr><td colSpan={16} style={{ ...tdBase, color: C.muted, fontStyle: 'italic' }}>
+                    <tr><td colSpan={5} style={{ ...tdBase, color: C.muted, fontStyle: 'italic' }}>
                       Aucun véhicule — cliquez sur « + Véhicule » pour en ajouter.
                     </td></tr>
                   ) : list.map((v) => (
@@ -677,30 +702,14 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
                       <td style={{ ...tdBase, fontFamily: FONT_MONO, color: C.muted }}>
                         {v.date_mec || '—'}
                       </td>
-                      {MONTHS_SHORT.map((_, i) => {
-                        const isCt = v.ct_month === i + 1
-                        return (
-                          <td key={i} style={{
-                            ...tdBase, textAlign: 'center', padding: 3,
-                            background: i + 1 === CURRENT_MONTH ? '#FCFBE4' : undefined,
-                          }}>
-                            {isCt && (
-                              <span style={{
-                                display: 'inline-block', minWidth: 24, padding: '3px 5px',
-                                background: C.green, color: '#fff', borderRadius: 6,
-                                fontFamily: FONT_MONO, fontWeight: 700, fontSize: 12,
-                              }}>{v.ct_day || '•'}</span>
-                            )}
-                          </td>
-                        )
-                      })}
+                      <td style={tdBase}><CtCell ctDate={v.ct_date} /></td>
                     </tr>
                   ))}
                 </React.Fragment>
               )
             })}
             {categories.length === 0 && (
-              <tr><td colSpan={16} style={{ ...tdBase, textAlign: 'center', color: C.muted, padding: 40 }}>
+              <tr><td colSpan={5} style={{ ...tdBase, textAlign: 'center', color: C.muted, padding: 40 }}>
                 Aucune catégorie. Créez-en une pour commencer.
               </td></tr>
             )}
@@ -709,16 +718,22 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
       </div>
 
       {/* Légende */}
-      <div className="no-print" style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 12, fontSize: 12.5, color: C.muted }}>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 22, height: 16, background: C.green, borderRadius: 4, display: 'inline-block' }} />
-          Jour du contrôle technique
-        </span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 22, height: 16, background: C.yellow, borderRadius: 4, display: 'inline-block' }} />
-          Mois en cours
-        </span>
-        <span>🔧 = interventions enregistrées · cliquez sur un véhicule pour ouvrir sa fiche</span>
+      <div className="no-print" style={{
+        display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12,
+        fontSize: 12.5, color: C.muted, alignItems: 'center',
+      }}>
+        <span>Échéance du prochain CT :</span>
+        {[
+          [C.red, '≤ 30 jours ou dépassé'],
+          ['#9A6B00', '≤ 90 jours'],
+          [C.green, 'plus de 90 jours'],
+        ].map(([col, txt]) => (
+          <span key={txt} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 12, height: 12, background: col, borderRadius: 20, display: 'inline-block' }} />
+            {txt}
+          </span>
+        ))}
+        <span>· 🔧 = interventions · cliquez sur un véhicule pour ouvrir sa fiche</span>
       </div>
 
       {vehicleModal && (
@@ -777,8 +792,7 @@ function VehicleModal({ categories, initialCategoryId, vehicle, onClose, onSaved
     immatriculation: vehicle?.immatriculation || '',
     date_mec: vehicle?.date_mec || '',
     numero_serie: vehicle?.numero_serie || '',
-    ct_month: vehicle?.ct_month || '',
-    ct_day: vehicle?.ct_day || '',
+    ct_date: vehicle?.ct_date || '',
     notes: vehicle?.notes || '',
   })
   const [busy, setBusy] = useState(false)
@@ -788,11 +802,7 @@ function VehicleModal({ categories, initialCategoryId, vehicle, onClose, onSaved
     if (!form.category_id) return notify('Choisissez une catégorie', 'error')
     setBusy(true)
     try {
-      const payload = {
-        ...form,
-        ct_month: form.ct_month ? Number(form.ct_month) : null,
-        ct_day: form.ct_day ? Number(form.ct_day) : null,
-      }
+      const payload = { ...form }
       await apiFetch(editing ? `/vehicles/${vehicle.id}` : '/vehicles', {
         method: editing ? 'PUT' : 'POST',
         body: JSON.stringify(payload),
@@ -838,20 +848,11 @@ function VehicleModal({ categories, initialCategoryId, vehicle, onClose, onSaved
           <input style={{ ...S.input, fontFamily: FONT_MONO }} value={form.numero_serie}
             onChange={(e) => set('numero_serie', e.target.value)} placeholder="VF6…" />
         </Field>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <Field label="Mois du contrôle technique">
-            <select style={S.input} value={form.ct_month}
-              onChange={(e) => set('ct_month', e.target.value)}>
-              <option value="">— Aucun —</option>
-              {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-            </select>
-          </Field>
-          <Field label="Jour du CT">
-            <input style={S.input} type="number" min={1} max={31} value={form.ct_day}
-              onChange={(e) => set('ct_day', e.target.value)}
-              disabled={!form.ct_month} placeholder="15" />
-          </Field>
-        </div>
+        <Field label="Date du prochain contrôle technique"
+          hint="Le contrôle technique est renouvelé tous les 2 ans">
+          <input style={S.input} type="date" value={form.ct_date}
+            onChange={(e) => set('ct_date', e.target.value)} />
+        </Field>
         <Field label="Notes">
           <textarea style={{ ...S.input, minHeight: 64, resize: 'vertical' }} value={form.notes}
             onChange={(e) => set('notes', e.target.value)} />
@@ -1042,8 +1043,8 @@ function VehicleDetail({ vehicleId, categories, onBack, reloadFleet }) {
           }}>
             <InfoCell label="Date 1ère MEC" value={vehicle.date_mec || '—'} mono />
             <InfoCell label="N° de série" value={vehicle.numero_serie || '—'} mono />
-            <InfoCell label="Contrôle technique"
-              value={vehicle.ct_month ? `${MONTHS[vehicle.ct_month - 1]}${vehicle.ct_day ? ' ' + vehicle.ct_day : ''}` : '—'} />
+            <InfoCell label="Prochain contrôle technique"
+              value={vehicle.ct_date ? formatDate(vehicle.ct_date) : '—'} mono />
             <InfoCell label="Interventions" value={String(interventions.length)} />
             <InfoCell label="Coût total HT" value={fmtMoney(grandTotal)} mono accent />
           </div>
@@ -1777,22 +1778,22 @@ function StatsPage({ categories, vehicles }) {
 
   /* ── Échéances CT ── */
   const ctUpcoming = useMemo(() => {
-    const today = startOfToday()
     const out = []
     for (const v of vehicles) {
-      if (!v.ct_month) continue
-      const date = nextCtDate(v.ct_month, v.ct_day)
-      const days = Math.round((date - today) / 864e5)
-      if (days <= 60) out.push({ v, date, days })
+      const info = ctInfo(v.ct_date)
+      if (info && info.days <= 60) out.push({ v, ...info })
     }
     return out.sort((a, b) => a.days - b.days)
   }, [vehicles])
 
-  const ctMissing = useMemo(() => vehicles.filter((v) => !v.ct_month), [vehicles])
+  const ctMissing = useMemo(() => vehicles.filter((v) => !v.ct_date), [vehicles])
 
   const ctByMonth = useMemo(() => {
     const arr = Array(12).fill(0)
-    for (const v of vehicles) if (v.ct_month >= 1 && v.ct_month <= 12) arr[v.ct_month - 1]++
+    for (const v of vehicles) {
+      const d = parseIsoDate(v.ct_date)
+      if (d) arr[d.getMonth()]++
+    }
     return arr
   }, [vehicles])
 
@@ -1898,30 +1899,30 @@ function StatsPage({ categories, vehicles }) {
               <div style={statEmpty}>Aucun CT à échéance dans les 60 jours.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {ctUpcoming.map(({ v, date, days }) => (
-                  <div key={v.id} style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '7px 10px', background: C.bg, borderRadius: 8,
-                  }}>
-                    <span style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 13 }}>
-                      {v.immatriculation || '—'}
-                    </span>
-                    <span style={{
-                      flex: 1, fontSize: 12, color: C.muted, whiteSpace: 'nowrap',
-                      overflow: 'hidden', textOverflow: 'ellipsis',
+                {ctUpcoming.map(({ v, date, days }) => {
+                  const tone = ctTone(days)
+                  return (
+                    <div key={v.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '7px 10px', background: C.bg, borderRadius: 8,
                     }}>
-                      {[v.marque, v.modele].filter(Boolean).join(' ')}
-                    </span>
-                    <span style={{ fontFamily: FONT_MONO, fontSize: 12.5 }}>{ddmm(date)}</span>
-                    <span style={{
-                      fontFamily: FONT_MONO, fontWeight: 700, fontSize: 11, color: '#fff',
-                      padding: '2px 7px', borderRadius: 20,
-                      background: days <= 14 ? C.red : days <= 30 ? '#9A6B00' : C.green,
-                    }}>
-                      {days <= 0 ? 'auj.' : 'J-' + days}
-                    </span>
-                  </div>
-                ))}
+                      <span style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 13 }}>
+                        {v.immatriculation || '—'}
+                      </span>
+                      <span style={{
+                        flex: 1, fontSize: 12, color: C.muted, whiteSpace: 'nowrap',
+                        overflow: 'hidden', textOverflow: 'ellipsis',
+                      }}>
+                        {[v.marque, v.modele].filter(Boolean).join(' ')}
+                      </span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 12.5 }}>{ddmm(date)}</span>
+                      <span style={{
+                        fontFamily: FONT_MONO, fontWeight: 700, fontSize: 11, color: '#fff',
+                        padding: '2px 7px', borderRadius: 20, background: tone.color,
+                      }}>{tone.label}</span>
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>

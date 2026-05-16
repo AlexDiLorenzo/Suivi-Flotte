@@ -1,6 +1,22 @@
 import pg from "pg";
 import { categoriesSeed, vehiclesSeed, interventionsSeed } from "./seedData.js";
 
+// Migration : convertit l'ancien planning mois/jour en date ISO complète
+// (prochaine occurrence à venir). Le jour est borné au dernier jour du mois.
+function nextCtIso(month, day) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const build = (year) => {
+    const lastDay = new Date(year, month, 0).getDate();
+    const d = Math.min(Math.max(day || 1, 1), lastDay);
+    return new Date(year, month - 1, d);
+  };
+  let date = build(today.getFullYear());
+  if (date < today) date = build(today.getFullYear() + 1);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}`;
+}
+
 const pool = new pg.Pool({
   host: process.env.DB_HOST || "flotte-db",
   port: parseInt(process.env.DB_PORT || "5432"),
@@ -36,6 +52,7 @@ export async function initDB() {
         numero_serie TEXT NOT NULL DEFAULT '',
         ct_month INT,
         ct_day INT,
+        ct_date TEXT NOT NULL DEFAULT '',
         notes TEXT NOT NULL DEFAULT '',
         position INT NOT NULL DEFAULT 0,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -91,6 +108,9 @@ export async function initDB() {
         dim TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (week_start, driver_id)
       );
+
+      -- Date du prochain contrôle technique (remplace le planning mois/jour)
+      ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS ct_date TEXT NOT NULL DEFAULT '';
     `);
 
     // ── Seed reference data on first run ──────────────────────
@@ -164,6 +184,18 @@ export async function initDB() {
           [team[i], i + 1]
         );
       }
+    }
+
+    // ── Migration ct_date : renseigne la date depuis l'ancien
+    //    planning mois/jour pour les véhicules pas encore convertis ──
+    const { rows: ctToFill } = await client.query(
+      "SELECT id, ct_month, ct_day FROM vehicles WHERE ct_date = '' AND ct_month IS NOT NULL"
+    );
+    for (const v of ctToFill) {
+      await client.query("UPDATE vehicles SET ct_date = $1 WHERE id = $2", [
+        nextCtIso(v.ct_month, v.ct_day),
+        v.id,
+      ]);
     }
 
     console.log("Database initialized");

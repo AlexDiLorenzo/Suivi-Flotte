@@ -115,12 +115,12 @@ app.post("/api/vehicles", wrap(async (req, res) => {
   const { rows: pos } = await pool.query("SELECT COALESCE(MAX(position),0)+1 AS p FROM vehicles");
   const { rows } = await pool.query(
     `INSERT INTO vehicles
-       (category_id, marque, modele, immatriculation, date_mec, numero_serie, ct_month, ct_day, notes, position)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+       (category_id, marque, modele, immatriculation, date_mec, numero_serie, ct_date, notes, position)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
     [
       v.category_id, v.marque || "", v.modele || "", v.immatriculation || "",
       v.date_mec || "", v.numero_serie || "",
-      v.ct_month || null, v.ct_day || null, v.notes || "", pos[0].p,
+      v.ct_date || "", v.notes || "", pos[0].p,
     ]
   );
   res.json(rows[0]);
@@ -131,12 +131,12 @@ app.put("/api/vehicles/:id", wrap(async (req, res) => {
   const { rows } = await pool.query(
     `UPDATE vehicles SET
        category_id=$1, marque=$2, modele=$3, immatriculation=$4, date_mec=$5,
-       numero_serie=$6, ct_month=$7, ct_day=$8, notes=$9
-     WHERE id=$10 RETURNING *`,
+       numero_serie=$6, ct_date=$7, notes=$8
+     WHERE id=$9 RETURNING *`,
     [
       v.category_id, v.marque || "", v.modele || "", v.immatriculation || "",
       v.date_mec || "", v.numero_serie || "",
-      v.ct_month || null, v.ct_day || null, v.notes || "", req.params.id,
+      v.ct_date || "", v.notes || "", req.params.id,
     ]
   );
   if (!rows.length) return res.status(404).json({ error: "Véhicule introuvable" });

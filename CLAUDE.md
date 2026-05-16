@@ -43,7 +43,7 @@ indicators page and the Pérols presence sheet).
 - **StatsPage** = the read-only indicators tab. It fetches `GET /api/stats`
   (per-intervention cost rows + cost-by-part-type) and crosses it with the
   already-loaded `categories`/`vehicles` to derive KPIs: CT due within 60 days,
-  vehicles with no CT month, fleet age, costs per vehicle/part-type, workshop
+  vehicles with no CT date, fleet age, costs per vehicle/part-type, workshop
   activity. CSS-only bar charts (`HBar` / `MonthBars`), no chart library.
 
 - **`apiFetch()`** wraps `fetch`, injects the JWT, auto-logs-out on 401.
@@ -52,9 +52,11 @@ indicators page and the Pérols presence sheet).
 - **Styling is inline.** Fonts: DM Sans (body), Space Mono (headings),
   JetBrains Mono (plates / numbers / money). A few `:hover` rules live in
   `index.css`.
-- **Dashboard** = the Excel table: category section rows use the category color;
-  columns are Marque / Modèle / Immatriculation / 1ère MEC + 12 months. The CT
-  day shows as a green pill in its month column; the current month is highlighted.
+- **Dashboard** = the fleet list: category section rows use the category color;
+  columns are Marque / Modèle / Immatriculation / 1ère MEC / Prochain CT. The CT
+  cell (`CtCell`) shows the next inspection date + a coloured `J-xx` countdown
+  pill (`ctTone`: red ≤30 j or overdue, orange ≤90 j, green beyond). Rows are
+  sorted within each category by CT date (`ctSort`, soonest first).
 - **PresencePage** = the Pérols weekly presence sheet. A week is identified by
   its Monday (`mondayOf` / `ymd`); the grid is `{driverId: {lun…dim}}`. It
   **auto-saves** (debounced 700 ms) — a `skipSave` ref blocks saves during the
@@ -72,9 +74,12 @@ indicators page and the Pérols presence sheet).
   Presence page existed.
 - Tables: `users`, `categories`, `vehicles`, `interventions`,
   `intervention_items`, `presence_drivers`, `presence_weeks`,
-  `presence_entries`. `vehicles.ct_month`/`ct_day` store the recurring annual
-  CT planning (no year — it is a rolling annual schedule). Presence weeks are
-  keyed by `week_start` (the Monday, `YYYY-MM-DD`).
+  `presence_entries`. `vehicles.ct_date` (`YYYY-MM-DD`) stores the next
+  technical-inspection date — the CT cycle is **biennial**. The legacy
+  `ct_month`/`ct_day` columns are kept but unused; `initDB()` adds `ct_date`
+  via `ALTER TABLE … ADD COLUMN IF NOT EXISTS` and back-fills it from the old
+  month/day on first run (`nextCtIso`). Presence weeks are keyed by
+  `week_start` (the Monday, `YYYY-MM-DD`).
 - Endpoints:
   - `GET /api/auth/check`, `POST /api/auth/setup`, `POST /api/auth/login`
   - `GET/POST /api/categories`, `PUT/DELETE /api/categories/:id`
