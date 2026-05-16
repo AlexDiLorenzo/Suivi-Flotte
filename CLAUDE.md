@@ -42,9 +42,14 @@ indicators page and the Pérols presence sheet).
 
 - **StatsPage** = the read-only indicators tab. It fetches `GET /api/stats`
   (per-intervention cost rows + cost-by-part-type) and crosses it with the
-  already-loaded `categories`/`vehicles` to derive KPIs: CT due within 60 days,
-  vehicles with no CT date, fleet age, costs per vehicle/part-type, workshop
-  activity. CSS-only bar charts (`HBar` / `MonthBars`), no chart library.
+  already-loaded `categories`/`vehicles`. Sections: a red alert banner for
+  vehicles with no CT date, a KPI band, a **Qualité des données** completeness
+  panel, CT & insurance due-date panels, a per-category vehicle breakdown, a
+  per-category **age pyramid** (`AgeStack`, buckets `<5/5-10/10-15/+15`). The
+  maintenance-cost and workshop-activity sections only render once
+  `MIN_TRACKED` vehicles have an intervention history — otherwise a "Modules en
+  cours de déploiement" placeholder is shown (`dataReady` flag). CSS-only
+  charts (`HBar` / `MonthBars` / `AgeStack`), no chart library.
 
 - **`apiFetch()`** wraps `fetch`, injects the JWT, auto-logs-out on 401.
 - **Auth:** token in `localStorage` (`flotte-token` / `flotte-user`).
@@ -75,8 +80,11 @@ indicators page and the Pérols presence sheet).
 - Tables: `users`, `categories`, `vehicles`, `interventions`,
   `intervention_items`, `presence_drivers`, `presence_weeks`,
   `presence_entries`. `vehicles.ct_date` (`YYYY-MM-DD`) stores the next
-  technical-inspection date — the CT cycle is **biennial**. The legacy
-  `ct_month`/`ct_day` columns are kept but unused; `initDB()` adds `ct_date`
+  technical-inspection date — the CT cycle is **biennial**. `assurance_date`
+  (`YYYY-MM-DD`) is the insurance-renewal due date; `statut` is the operating
+  status (`Actif` / `Stocké` / `En cession` / `Hors service`, empty = unset).
+  The legacy `ct_month`/`ct_day` columns are kept but unused; `initDB()` adds
+  `ct_date` / `assurance_date` / `statut`
   via `ALTER TABLE … ADD COLUMN IF NOT EXISTS` and back-fills it from the old
   month/day on first run (`nextCtIso`). Presence weeks are keyed by
   `week_start` (the Monday, `YYYY-MM-DD`).

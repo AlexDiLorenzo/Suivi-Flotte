@@ -29,6 +29,8 @@ const MONTHS_SHORT = ['JAN', 'FÉV', 'MARS', 'AVR', 'MAI', 'JUIN',
 const ITEM_TYPES = ['Filtre à air', 'Filtre à huile', 'Filtre à gasoil',
   'Freins AV', 'Freins AR', 'Passage aux mines', 'Vidange', 'Pneumatiques', 'Autre']
 
+const VEHICLE_STATUTS = ['Actif', 'Stocké', 'En cession', 'Hors service']
+
 const CATEGORY_PALETTE = ['#F4C7D9', '#F2EAB6', '#C9B8DC', '#F2D2A9', '#B7D7E8',
   '#C6E0B4', '#E8E4A0', '#F9E79F', '#BFE6C4', '#AEC8E8']
 
@@ -793,6 +795,8 @@ function VehicleModal({ categories, initialCategoryId, vehicle, onClose, onSaved
     date_mec: vehicle?.date_mec || '',
     numero_serie: vehicle?.numero_serie || '',
     ct_date: vehicle?.ct_date || '',
+    assurance_date: vehicle?.assurance_date || '',
+    statut: vehicle?.statut || '',
     notes: vehicle?.notes || '',
   })
   const [busy, setBusy] = useState(false)
@@ -848,10 +852,22 @@ function VehicleModal({ categories, initialCategoryId, vehicle, onClose, onSaved
           <input style={{ ...S.input, fontFamily: FONT_MONO }} value={form.numero_serie}
             onChange={(e) => set('numero_serie', e.target.value)} placeholder="VF6…" />
         </Field>
-        <Field label="Date du prochain contrôle technique"
-          hint="Le contrôle technique est renouvelé tous les 2 ans">
-          <input style={S.input} type="date" value={form.ct_date}
-            onChange={(e) => set('ct_date', e.target.value)} />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <Field label="Prochain contrôle technique" hint="CT renouvelé tous les 2 ans">
+            <input style={S.input} type="date" value={form.ct_date}
+              onChange={(e) => set('ct_date', e.target.value)} />
+          </Field>
+          <Field label="Échéance d'assurance">
+            <input style={S.input} type="date" value={form.assurance_date}
+              onChange={(e) => set('assurance_date', e.target.value)} />
+          </Field>
+        </div>
+        <Field label="Statut du véhicule">
+          <select style={S.input} value={form.statut}
+            onChange={(e) => set('statut', e.target.value)}>
+            <option value="">— Non renseigné —</option>
+            {VEHICLE_STATUTS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
         </Field>
         <Field label="Notes">
           <textarea style={{ ...S.input, minHeight: 64, resize: 'vertical' }} value={form.notes}
@@ -1045,6 +1061,9 @@ function VehicleDetail({ vehicleId, categories, onBack, reloadFleet }) {
             <InfoCell label="N° de série" value={vehicle.numero_serie || '—'} mono />
             <InfoCell label="Prochain contrôle technique"
               value={vehicle.ct_date ? formatDate(vehicle.ct_date) : '—'} mono />
+            <InfoCell label="Échéance assurance"
+              value={vehicle.assurance_date ? formatDate(vehicle.assurance_date) : '—'} mono />
+            <InfoCell label="Statut" value={vehicle.statut || '—'} />
             <InfoCell label="Interventions" value={String(interventions.length)} />
             <InfoCell label="Coût total HT" value={fmtMoney(grandTotal)} mono accent />
           </div>
@@ -1749,6 +1768,40 @@ function MonthBars({ data }) {
 const statSubTitle = { ...S.label, marginBottom: 11 }
 const statEmpty = { fontSize: 13, color: C.muted, fontStyle: 'italic', padding: '6px 0' }
 
+/* Tranches d'âge — base du plan de renouvellement */
+const AGE_BUCKETS = [
+  { label: '< 5 ans', color: '#C6E0B4' },
+  { label: '5-10 ans', color: '#E8E4A0' },
+  { label: '10-15 ans', color: '#F2D2A9' },
+  { label: '+ 15 ans', color: '#E59A9A' },
+]
+function ageBucket(years) {
+  if (years < 5) return 0
+  if (years < 10) return 1
+  if (years < 15) return 2
+  return 3
+}
+/* Nb minimum de véhicules suivis avant d'activer les modules de coûts */
+const MIN_TRACKED = 5
+
+/* Barre empilée — pyramide des âges d'une catégorie */
+function AgeStack({ buckets }) {
+  const total = buckets.reduce((s, n) => s + n, 0)
+  return (
+    <div style={{
+      display: 'flex', flex: 1, height: 20, borderRadius: 5,
+      overflow: 'hidden', background: C.bg,
+    }}>
+      {total > 0 && buckets.map((n, i) => (
+        n > 0 ? (
+          <div key={i} title={`${AGE_BUCKETS[i].label} : ${n}`}
+            style={{ width: (n / total * 100) + '%', background: AGE_BUCKETS[i].color }} />
+        ) : null
+      ))}
+    </div>
+  )
+}
+
 function StatsPage({ categories, vehicles }) {
   const notify = useToast()
   const [stats, setStats] = useState(null)
@@ -1797,20 +1850,65 @@ function StatsPage({ categories, vehicles }) {
     return arr
   }, [vehicles])
 
+  /* ── Échéances assurance ── */
+  const assuranceUpcoming = useMemo(() => {
+    const out = []
+    for (const v of vehicles) {
+      const info = ctInfo(v.assurance_date)
+      if (info && info.days <= 60) out.push({ v, ...info })
+    }
+    return out.sort((a, b) => a.days - b.days)
+  }, [vehicles])
+
+  const assuranceMissing = useMemo(
+    () => vehicles.filter((v) => !v.assurance_date), [vehicles])
+
+  /* ── Statut du parc ── */
+  const { activeCount, statutKnown } = useMemo(() => {
+    let active = 0, known = 0
+    for (const v of vehicles) {
+      if (v.statut) known++
+      if (v.statut === 'Actif') active++
+    }
+    return { activeCount: active, statutKnown: known }
+  }, [vehicles])
+
   /* ── Composition ── */
   const byCategory = useMemo(() => categories.map((c) => ({
     cat: c, count: vehicles.filter((v) => v.category_id === c.id).length,
   })), [categories, vehicles])
 
-  const { avgAge, oldest } = useMemo(() => {
-    let sum = 0, n = 0, old = null
-    for (const v of vehicles) {
+  /* ── Âge par catégorie + pyramide des âges ── */
+  const ageByCategory = useMemo(() => categories.map((c) => {
+    const list = vehicles.filter((v) => v.category_id === c.id)
+    const buckets = [0, 0, 0, 0]
+    let sum = 0, n = 0
+    for (const v of list) {
       const a = ageYears(v.date_mec)
       if (a == null) continue
-      sum += a; n++
-      if (!old || a > old.age) old = { v, age: a }
+      sum += a; n++; buckets[ageBucket(a)]++
     }
-    return { avgAge: n ? sum / n : null, oldest: old }
+    return { cat: c, avg: n ? sum / n : null, aged: n, buckets }
+  }), [categories, vehicles])
+
+  const ageUnknown = useMemo(
+    () => vehicles.filter((v) => ageYears(v.date_mec) == null).length, [vehicles])
+
+  /* ── Qualité des données ── */
+  const dataQuality = useMemo(() => {
+    const total = vehicles.length || 1
+    const rate = (pred) => {
+      const count = vehicles.filter(pred).length
+      return { count, pct: Math.round((count / total) * 100) }
+    }
+    return [
+      { label: 'Immatriculation', ...rate((v) => (v.immatriculation || '').trim()) },
+      { label: '1ère mise en circulation', ...rate((v) => ageYears(v.date_mec) != null) },
+      { label: 'Date de contrôle technique', ...rate((v) => v.ct_date) },
+      { label: "Échéance d'assurance", ...rate((v) => v.assurance_date) },
+      { label: 'Statut du véhicule', ...rate((v) => v.statut) },
+      { label: 'Numéro de série', ...rate((v) => (v.numero_serie || '').trim()) },
+    ]
   }, [vehicles])
 
   /* ── Coûts ── */
@@ -1845,6 +1943,9 @@ function StatsPage({ categories, vehicles }) {
     )
   }
 
+  const dataReady = trackedVehicles.length >= MIN_TRACKED
+  const ctMissingPct = vehicles.length
+    ? Math.round((ctMissing.length / vehicles.length) * 100) : 0
   const maxCat = Math.max(1, ...byCategory.map((x) => x.count))
   const maxTop = Math.max(1, ...topVehicles.map((x) => x.cost))
   const typeRows = byType.filter((t) => Number(t.total) > 0)
@@ -1875,20 +1976,64 @@ function StatsPage({ categories, vehicles }) {
         </button>
       </div>
 
+      {/* Alerte critique — véhicules sans CT planifié */}
+      {ctMissing.length > 0 && (
+        <div style={{
+          background: '#FBEAEA', border: `1px solid ${C.red}`,
+          borderLeft: `5px solid ${C.red}`, borderRadius: 10,
+          padding: '14px 18px', marginBottom: 18,
+          display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: 26, lineHeight: 1 }}>⚠️</span>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <div style={{ fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 16, color: C.red }}>
+              {ctMissing.length} véhicules sans date de CT planifiée
+            </div>
+            <div style={{ fontSize: 13, color: C.ink, marginTop: 3 }}>
+              Soit {ctMissingPct} % de la flotte. Aucune échéance ne peut être anticipée
+              tant que la date n'est pas renseignée — à traiter en priorité.
+            </div>
+          </div>
+          <span style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 32, color: C.red }}>
+            {ctMissingPct} %
+          </span>
+        </div>
+      )}
+
       {/* Bandeau de chiffres-clés */}
       <div style={{
         display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(158px, 1fr))',
         gap: 12, marginBottom: 20,
       }}>
         <Kpi label="Véhicules" value={vehicles.length} />
-        <Kpi label="Âge moyen" value={avgAge != null ? avgAge.toFixed(1) : '—'} sub="ans" />
+        <Kpi label="Véhicules actifs"
+          value={statutKnown ? activeCount : '—'}
+          sub={statutKnown ? `sur ${vehicles.length}` : 'statut à renseigner'}
+          tone={statutKnown ? undefined : 'warn'} />
         <Kpi label="CT sous 60 jours" value={ctUpcoming.length}
           tone={ctUpcoming.length ? 'warn' : 'ok'} />
-        <Kpi label="Sans CT planifié" value={ctMissing.length}
-          tone={ctMissing.length ? 'danger' : 'ok'} />
-        <Kpi label={'Coût maintenance ' + CURRENT_YEAR} value={fmtMoney(yearCost)} mono />
-        <Kpi label={'Interventions ' + CURRENT_YEAR} value={yearItems.length} />
+        <Kpi label="Assurances sous 60 jours" value={assuranceUpcoming.length}
+          tone={assuranceUpcoming.length ? 'warn' : 'ok'} />
+        {dataReady && (
+          <Kpi label={'Coût maintenance ' + CURRENT_YEAR} value={fmtMoney(yearCost)} mono />
+        )}
+        {dataReady && (
+          <Kpi label={'Interventions ' + CURRENT_YEAR} value={yearItems.length} />
+        )}
       </div>
+
+      {/* Qualité des données */}
+      <StatPanel title="Qualité des données">
+        <p style={{ fontSize: 13, color: C.muted, margin: '-6px 0 14px' }}>
+          Taux de complétude des champs clés. Les indicateurs ci-dessous ne sont
+          fiables que sur les données effectivement renseignées.
+        </p>
+        {dataQuality.map((d) => (
+          <HBar key={d.label} label={d.label} value={d.pct} max={100}
+            color={d.pct >= 80 ? C.green : d.pct >= 40 ? '#9A6B00' : C.red}
+            display={`${d.count}/${vehicles.length} · ${d.pct}%`} />
+        ))}
+      </StatPanel>
 
       {/* Échéances de contrôle technique */}
       <StatPanel title="Échéances de contrôle technique">
@@ -1941,110 +2086,225 @@ function StatsPage({ categories, vehicles }) {
         </div>
       </StatPanel>
 
+      {/* Échéances d'assurance */}
+      <StatPanel title="Échéances d'assurance">
+        <div style={col2}>
+          <div>
+            <div style={statSubTitle}>Assurances à renouveler sous 60 jours</div>
+            {assuranceUpcoming.length === 0 ? (
+              <div style={statEmpty}>Aucune échéance d'assurance dans les 60 jours.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {assuranceUpcoming.map(({ v, date, days }) => {
+                  const tone = ctTone(days)
+                  return (
+                    <div key={v.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '7px 10px', background: C.bg, borderRadius: 8,
+                    }}>
+                      <span style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 13 }}>
+                        {v.immatriculation || '—'}
+                      </span>
+                      <span style={{
+                        flex: 1, fontSize: 12, color: C.muted, whiteSpace: 'nowrap',
+                        overflow: 'hidden', textOverflow: 'ellipsis',
+                      }}>
+                        {[v.marque, v.modele].filter(Boolean).join(' ')}
+                      </span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 12.5 }}>{ddmm(date)}</span>
+                      <span style={{
+                        fontFamily: FONT_MONO, fontWeight: 700, fontSize: 11, color: '#fff',
+                        padding: '2px 7px', borderRadius: 20, background: tone.color,
+                      }}>{tone.label}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+          <div>
+            <div style={statSubTitle}>État du suivi</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <MiniStat label="À renouveler sous 60 jours" value={assuranceUpcoming.length} />
+              <MiniStat label="Sans échéance renseignée"
+                value={`${assuranceMissing.length} / ${vehicles.length}`} />
+            </div>
+            {assuranceMissing.length > 0 && (
+              <div style={{ marginTop: 12, fontSize: 12.5, color: C.red }}>
+                ⚠ {assuranceMissing.length} véhicule(s) sans date d'assurance renseignée
+              </div>
+            )}
+          </div>
+        </div>
+      </StatPanel>
+
       {/* Composition de la flotte */}
       <StatPanel title="Composition de la flotte">
-        <div style={col2}>
-          <div>
-            <div style={statSubTitle}>Véhicules par catégorie</div>
-            {byCategory.length === 0 ? (
-              <div style={statEmpty}>Aucune catégorie.</div>
-            ) : byCategory.map(({ cat, count }) => (
-              <HBar key={cat.id} label={cat.name} value={count} max={maxCat}
-                color={cat.color} display={count + ' véh.'} />
-            ))}
-          </div>
-          <div>
-            <div style={statSubTitle}>Âge de la flotte</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <MiniStat label="Âge moyen"
-                value={avgAge != null ? avgAge.toFixed(1) + ' ans' : '—'} />
-              <MiniStat label="Véhicule le plus ancien"
-                value={oldest
-                  ? `${oldest.v.immatriculation || '—'} · ${oldest.age.toFixed(0)} ans`
-                  : '—'} />
-            </div>
-          </div>
-        </div>
+        <div style={statSubTitle}>Véhicules par catégorie</div>
+        {byCategory.length === 0 ? (
+          <div style={statEmpty}>Aucune catégorie.</div>
+        ) : byCategory.map(({ cat, count }) => (
+          <HBar key={cat.id} label={cat.name} value={count} max={maxCat}
+            color={cat.color} display={count + ' véh.'} />
+        ))}
       </StatPanel>
 
-      {/* Coûts de maintenance */}
-      <StatPanel title="Coûts de maintenance">
-        <div style={gridStats}>
-          <MiniStat label="Coût total (historique)" value={fmtMoney(totalCost)} />
-          <MiniStat label={'Coût ' + CURRENT_YEAR} value={fmtMoney(yearCost)} />
-          <MiniStat label="Coût moyen / intervention" value={fmtMoney(avgCost)} />
-          <MiniStat label="Interventions chiffrées" value={interventions.length} />
-        </div>
-        <div style={col2}>
-          <div>
-            <div style={statSubTitle}>Top 5 véhicules les plus coûteux</div>
-            {topVehicles.length === 0 ? (
-              <div style={statEmpty}>Aucune intervention chiffrée pour le moment.</div>
-            ) : topVehicles.map(({ v, cost, count }) => (
-              <HBar key={v.id}
-                label={`${v.immatriculation || '—'} · ${count} interv.`}
-                value={cost} max={maxTop} display={fmtMoney(cost)} />
-            ))}
-          </div>
-          <div>
-            <div style={statSubTitle}>Coûts par type de pièce</div>
-            {typeRows.length === 0 ? (
-              <div style={statEmpty}>Aucune donnée de coût.</div>
-            ) : typeRows.map((t) => (
-              <HBar key={t.type} label={t.type} value={Number(t.total)}
-                max={maxType} color={C.blue} display={fmtMoney(t.total)} />
-            ))}
-          </div>
-        </div>
-      </StatPanel>
-
-      {/* Activité atelier */}
-      <StatPanel title="Activité atelier">
-        <div style={gridStats}>
-          <MiniStat label="Véhicules avec historique"
-            value={`${trackedVehicles.length} / ${vehicles.length}`} />
-          <MiniStat label="Interventions totales" value={interventions.length} />
-          <MiniStat label={'Interventions ' + CURRENT_YEAR} value={yearItems.length} />
-          <MiniStat label="Sans intervention enregistrée"
-            value={vehicles.length - trackedVehicles.length} />
-        </div>
-        <div style={statSubTitle}>Entretiens les plus anciens (véhicules suivis)</div>
-        {oldestService.length === 0 ? (
-          <div style={statEmpty}>Aucun historique d'intervention enregistré.</div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{
-              width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 560,
+      {/* Âge de la flotte */}
+      <StatPanel title="Âge de la flotte">
+        <p style={{ fontSize: 13, color: C.muted, margin: '-6px 0 14px' }}>
+          Âge moyen et répartition par tranche d'âge, catégorie par catégorie —
+          base du plan de renouvellement.
+        </p>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 14 }}>
+          {AGE_BUCKETS.map((b) => (
+            <span key={b.label} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontSize: 12, color: C.muted,
             }}>
-              <thead>
-                <tr>
-                  {['Immatriculation', 'Véhicule', 'Dernière intervention', 'Dernier km', 'Interv.']
-                    .map((h, i) => (
-                      <th key={h} style={{ ...thBase, textAlign: i > 2 ? 'right' : 'left' }}>{h}</th>
-                    ))}
-                </tr>
-              </thead>
-              <tbody>
-                {oldestService.map(({ v, lastDate, lastKm, count }) => (
-                  <tr key={v.id}>
-                    <td style={{ ...tdBase, fontFamily: FONT_MONO, fontWeight: 700 }}>
-                      {v.immatriculation || '—'}
-                    </td>
-                    <td style={tdBase}>
-                      {[v.marque, v.modele].filter(Boolean).join(' ') || '—'}
-                    </td>
-                    <td style={{ ...tdBase, fontFamily: FONT_MONO }}>{formatDate(lastDate)}</td>
-                    <td style={{ ...tdBase, fontFamily: FONT_MONO, textAlign: 'right' }}>
-                      {fmtKm(lastKm)}
-                    </td>
-                    <td style={{ ...tdBase, textAlign: 'right' }}>{count}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              <span style={{ width: 12, height: 12, borderRadius: 3, background: b.color }} />
+              {b.label}
+            </span>
+          ))}
+        </div>
+        {ageByCategory.map(({ cat, avg, aged, buckets }) => (
+          <div key={cat.id} style={{
+            display: 'flex', alignItems: 'center', gap: 10, marginBottom: 9,
+          }}>
+            <div style={{
+              width: 160, fontSize: 12.5, whiteSpace: 'nowrap',
+              overflow: 'hidden', textOverflow: 'ellipsis',
+            }} title={cat.name}>{cat.name}</div>
+            {aged === 0 ? (
+              <div style={{ flex: 1, fontSize: 12, color: C.muted, fontStyle: 'italic' }}>
+                aucune date connue
+              </div>
+            ) : (
+              <AgeStack buckets={buckets} />
+            )}
+            <div style={{
+              width: 100, textAlign: 'right', fontFamily: FONT_MONO,
+              fontWeight: 700, fontSize: 12.5,
+            }}>{avg != null ? avg.toFixed(1) + ' ans' : '—'}</div>
+          </div>
+        ))}
+        {ageUnknown > 0 && (
+          <div style={{ marginTop: 10, fontSize: 12, color: C.muted }}>
+            {ageUnknown} véhicule(s) sans date de 1ère MEC — non comptabilisés ci-dessus.
           </div>
         )}
       </StatPanel>
+
+      {dataReady ? (
+        <>
+          {/* Coûts de maintenance */}
+          <StatPanel title="Coûts de maintenance">
+            <div style={gridStats}>
+              <MiniStat label="Coût total (historique)" value={fmtMoney(totalCost)} />
+              <MiniStat label={'Coût ' + CURRENT_YEAR} value={fmtMoney(yearCost)} />
+              <MiniStat label="Coût moyen / intervention" value={fmtMoney(avgCost)} />
+              <MiniStat label="Interventions chiffrées" value={interventions.length} />
+            </div>
+            <div style={col2}>
+              <div>
+                <div style={statSubTitle}>Top 5 véhicules les plus coûteux</div>
+                {topVehicles.length === 0 ? (
+                  <div style={statEmpty}>Aucune intervention chiffrée pour le moment.</div>
+                ) : topVehicles.map(({ v, cost, count }) => (
+                  <HBar key={v.id}
+                    label={`${v.immatriculation || '—'} · ${count} interv.`}
+                    value={cost} max={maxTop} display={fmtMoney(cost)} />
+                ))}
+              </div>
+              <div>
+                <div style={statSubTitle}>Coûts par type de pièce</div>
+                {typeRows.length === 0 ? (
+                  <div style={statEmpty}>Aucune donnée de coût.</div>
+                ) : typeRows.map((t) => (
+                  <HBar key={t.type} label={t.type} value={Number(t.total)}
+                    max={maxType} color={C.blue} display={fmtMoney(t.total)} />
+                ))}
+              </div>
+            </div>
+          </StatPanel>
+
+          {/* Activité atelier */}
+          <StatPanel title="Activité atelier">
+            <div style={gridStats}>
+              <MiniStat label="Véhicules avec historique"
+                value={`${trackedVehicles.length} / ${vehicles.length}`} />
+              <MiniStat label="Interventions totales" value={interventions.length} />
+              <MiniStat label={'Interventions ' + CURRENT_YEAR} value={yearItems.length} />
+              <MiniStat label="Sans intervention enregistrée"
+                value={vehicles.length - trackedVehicles.length} />
+            </div>
+            <div style={statSubTitle}>Entretiens les plus anciens (véhicules suivis)</div>
+            {oldestService.length === 0 ? (
+              <div style={statEmpty}>Aucun historique d'intervention enregistré.</div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{
+                  width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 560,
+                }}>
+                  <thead>
+                    <tr>
+                      {['Immatriculation', 'Véhicule', 'Dernière intervention', 'Dernier km', 'Interv.']
+                        .map((h, i) => (
+                          <th key={h} style={{ ...thBase, textAlign: i > 2 ? 'right' : 'left' }}>{h}</th>
+                        ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {oldestService.map(({ v, lastDate, lastKm, count }) => (
+                      <tr key={v.id}>
+                        <td style={{ ...tdBase, fontFamily: FONT_MONO, fontWeight: 700 }}>
+                          {v.immatriculation || '—'}
+                        </td>
+                        <td style={tdBase}>
+                          {[v.marque, v.modele].filter(Boolean).join(' ') || '—'}
+                        </td>
+                        <td style={{ ...tdBase, fontFamily: FONT_MONO }}>{formatDate(lastDate)}</td>
+                        <td style={{ ...tdBase, fontFamily: FONT_MONO, textAlign: 'right' }}>
+                          {fmtKm(lastKm)}
+                        </td>
+                        <td style={{ ...tdBase, textAlign: 'right' }}>{count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </StatPanel>
+        </>
+      ) : (
+        <StatPanel title="Modules en cours de déploiement">
+          <p style={{ fontSize: 13.5, color: C.muted, margin: '-6px 0 14px' }}>
+            Ces indicateurs s'activeront automatiquement dès qu'assez de données
+            d'intervention auront été saisies. Actuellement {trackedVehicles.length}{' '}
+            véhicule(s) sur {vehicles.length} disposent d'un historique d'intervention.
+          </p>
+          {[
+            ['Coûts de maintenance', 'Dépenses par véhicule, par type de pièce et par fournisseur.'],
+            ['Top des véhicules les plus coûteux', "Classement des véhicules par coût d'entretien cumulé."],
+            ['Coûts par type de pièce', 'Répartition des dépenses : freins, pneus, vidange, filtres…'],
+            ['Activité atelier', 'Interventions, kilométrage et véhicules à entretenir en priorité.'],
+          ].map(([t, d]) => (
+            <div key={t} style={{
+              display: 'flex', gap: 12, alignItems: 'flex-start',
+              padding: '11px 13px', background: C.bg, borderRadius: 9, marginBottom: 8,
+            }}>
+              <span style={{
+                fontFamily: FONT_MONO, fontSize: 11, fontWeight: 700, color: C.muted,
+                background: C.borderSoft, padding: '3px 8px', borderRadius: 20,
+                whiteSpace: 'nowrap', marginTop: 1,
+              }}>🔒 Bientôt</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13.5 }}>{t}</div>
+                <div style={{ fontSize: 12.5, color: C.muted, marginTop: 2 }}>{d}</div>
+              </div>
+            </div>
+          ))}
+        </StatPanel>
+      )}
     </div>
   )
 }

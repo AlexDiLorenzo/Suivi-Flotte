@@ -53,6 +53,8 @@ export async function initDB() {
         ct_month INT,
         ct_day INT,
         ct_date TEXT NOT NULL DEFAULT '',
+        assurance_date TEXT NOT NULL DEFAULT '',
+        statut TEXT NOT NULL DEFAULT '',
         notes TEXT NOT NULL DEFAULT '',
         position INT NOT NULL DEFAULT 0,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -111,6 +113,9 @@ export async function initDB() {
 
       -- Date du prochain contrôle technique (remplace le planning mois/jour)
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS ct_date TEXT NOT NULL DEFAULT '';
+      -- Échéance d'assurance et statut d'exploitation du véhicule
+      ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS assurance_date TEXT NOT NULL DEFAULT '';
+      ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS statut TEXT NOT NULL DEFAULT '';
     `);
 
     // ── Seed reference data on first run ──────────────────────
