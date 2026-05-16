@@ -216,36 +216,6 @@ function buildPresenceEmailHtml({ weekNum, range, responsable, drivers, grid, da
   </div>`
 }
 
-/* HTML email — planning de la flotte */
-function buildFleetEmailHtml(categories, vehicles) {
-  const th = 'padding:6px 8px;border:1px solid #999;background:#2C6126;color:#fff;font-size:11px;text-align:left'
-  const td = 'padding:5px 7px;border:1px solid #ccc;font-size:11px'
-  const ctBg = (days) => (days <= 30 ? '#F4C7D9' : days <= 90 ? '#F2D2A9' : '#C6E0B4')
-  const head = '<tr>' +
-    ['Marque', 'Modèle', 'Immatriculation', '1ère MEC', 'Prochain CT']
-      .map((h) => `<th style="${th}">${h}</th>`).join('') + '</tr>'
-  let body = ''
-  for (const cat of categories) {
-    const list = vehicles.filter((v) => v.category_id === cat.id).sort(ctSort)
-    body += `<tr><td colspan="5" style="${td};background:${cat.color};font-weight:700">${esc(cat.name)}</td></tr>`
-    for (const v of list) {
-      const info = ctInfo(v.ct_date)
-      const ctCell = info
-        ? `<td style="${td};background:${ctBg(info.days)};white-space:nowrap">` +
-          `${formatDate(v.ct_date)} — ${esc(ctTone(info.days).label)}</td>`
-        : `<td style="${td};color:#888">—</td>`
-      body += `<tr><td style="${td}">${esc(v.marque)}</td><td style="${td}">${esc(v.modele)}</td>` +
-        `<td style="${td}">${esc(v.immatriculation)}</td>` +
-        `<td style="${td};text-align:center">${esc(v.date_mec)}</td>${ctCell}</tr>`
-    }
-  }
-  return `<div style="font-family:Arial,sans-serif;color:#1A190F">
-    <h2 style="margin:0 0 4px">Planning CT — Flotte Montpellier Dépannage</h2>
-    <p style="margin:0 0 12px;color:#555">${vehicles.length} véhicules · date du prochain contrôle technique</p>
-    <table style="border-collapse:collapse">${head}${body}</table>
-  </div>`
-}
-
 async function sendMail(subject, html) {
   return apiFetch('/send-mail', { method: 'POST', body: JSON.stringify({ subject, html }) })
 }
@@ -578,23 +548,6 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
   const [search, setSearch] = useState('')
   const [vehicleModal, setVehicleModal] = useState(null) // { categoryId } | { vehicle }
   const [categoryModal, setCategoryModal] = useState(null) // { } new | { category }
-  const [sendConfirm, setSendConfirm] = useState(false)
-  const [sending, setSending] = useState(false)
-
-  const sendFleet = async () => {
-    setSending(true)
-    try {
-      await sendMail(
-        'Planning CT — Flotte Montpellier Dépannage',
-        buildFleetEmailHtml(categories, vehicles)
-      )
-      notify(`Planning envoyé à ${MAIL_TO}`, 'success')
-    } catch (err) {
-      notify(err.message, 'error')
-    } finally {
-      setSending(false)
-    }
-  }
 
   const q = search.trim().toLowerCase()
   const matches = (v) =>
@@ -632,10 +585,6 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
         <div style={{ flex: 1 }} />
         <button style={S.btn} onClick={() => setCategoryModal({})}>+ Catégorie</button>
         <button style={S.btn} onClick={() => doPrint('portrait')}>🖨 Imprimer</button>
-        <button style={{ ...S.btn, ...S.btnPrimary }} disabled={sending}
-          onClick={() => setSendConfirm(true)}>
-          {sending ? 'Envoi…' : '✉ Envoyer à la compta'}
-        </button>
       </div>
 
       {/* Tableau */}
@@ -752,12 +701,6 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
           category={categoryModal.category}
           onClose={() => setCategoryModal(null)}
           onSaved={() => { setCategoryModal(null); reload() }}
-        />
-      )}
-      {sendConfirm && (
-        <ConfirmDialog
-          message={`Envoyer le planning CT de la flotte (${vehicles.length} véhicules) à ${MAIL_TO} ?`}
-          confirmLabel="Envoyer" onConfirm={sendFleet} onClose={() => setSendConfirm(false)}
         />
       )}
     </div>

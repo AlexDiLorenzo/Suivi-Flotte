@@ -106,9 +106,9 @@ indicators page and the Pérols presence sheet).
 
 Both tables (fleet dashboard, presence sheet) have a print button (`doPrint()`
 sets `@page` orientation, then `window.print()`; `.no-print` / `.print-area` /
-`.tablewrap` rules in `index.css`) and a "send to compta" button. The email HTML
-is built client-side (`buildFleetEmailHtml` / `buildPresenceEmailHtml`) and
-posted to `POST /api/send-mail`, which relays it through Resend. If
+`.tablewrap` rules in `index.css`). Only the **presence sheet** has a "send to
+compta" button — the email HTML is built client-side (`buildPresenceEmailHtml`)
+and posted to `POST /api/send-mail`, which relays it through Resend. If
 `RESEND_API_KEY` / `RESEND_FROM` are unset the endpoint returns 503 and printing
 still works.
 
