@@ -48,13 +48,21 @@ between the fleet dashboard and the Pérols presence sheet).
 - **Dashboard** = the Excel table: category section rows use the category color;
   columns are Marque / Modèle / Immatriculation / 1ère MEC + 12 months. The CT
   day shows as a green pill in its month column; the current month is highlighted.
+- **PresencePage** = the Pérols weekly presence sheet. A week is identified by
+  its Monday (`mondayOf` / `ymd`); the grid is `{driverId: {lun…dim}}`. It
+  **auto-saves** (debounced 700 ms) — a `skipSave` ref blocks saves during the
+  initial load and on week switches. The autosave payload is rebuilt from the
+  current `drivers` list, so entries for deleted drivers never reach the API.
 
 ### Backend (`api/`)
 
 - **Express + pg** REST API on port 3000, `wrap()` funnels async errors.
 - **JWT auth** — 30-day tokens, bcrypt hashing.
-- **`initDB()`** (`api/db.js`) creates tables and, on an empty DB, seeds
-  reference data from `api/seedData.js`.
+- **`initDB()`** (`api/db.js`) creates tables (idempotent `CREATE TABLE IF NOT
+  EXISTS`) and, on an empty DB, seeds the fleet from `api/seedData.js`. The
+  default Pérols team is seeded by a **separate, independent block** gated on an
+  empty `presence_drivers` table — so it also populates a DB created before the
+  Presence page existed.
 - Tables: `users`, `categories`, `vehicles`, `interventions`,
   `intervention_items`, `presence_drivers`, `presence_weeks`,
   `presence_entries`. `vehicles.ct_month`/`ct_day` store the recurring annual
