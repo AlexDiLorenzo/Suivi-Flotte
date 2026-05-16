@@ -61,6 +61,7 @@ app.use("/api/vehicles", auth);
 app.use("/api/interventions", auth);
 app.use("/api/presence", auth);
 app.use("/api/send-mail", auth);
+app.use("/api/stats", auth);
 
 // ── Catégories ──────────────────────────────────────────────
 app.get("/api/categories", wrap(async (_req, res) => {
@@ -231,6 +232,30 @@ app.put("/api/interventions/:id", wrap(async (req, res) => {
 app.delete("/api/interventions/:id", wrap(async (req, res) => {
   await pool.query("DELETE FROM interventions WHERE id=$1", [req.params.id]);
   res.json({ ok: true });
+}));
+
+// ── Indicateurs / statistiques de la flotte ─────────────────
+// Renvoie les données chiffrées des interventions ; le front
+// les croise avec la liste des véhicules pour bâtir les KPI.
+app.get("/api/stats", wrap(async (_req, res) => {
+  // Une ligne par intervention, avec son coût total HT
+  const { rows: interventions } = await pool.query(`
+    SELECT i.id, i.vehicle_id, i.date, i.kms,
+           COALESCE(SUM(it.quantite * it.prix_unitaire), 0)::float AS total
+    FROM interventions i
+    LEFT JOIN intervention_items it ON it.intervention_id = i.id
+    GROUP BY i.id
+  `);
+  // Coût cumulé par type de pièce / travail
+  const { rows: byType } = await pool.query(`
+    SELECT COALESCE(NULLIF(type, ''), 'Autre') AS type,
+           COALESCE(SUM(quantite * prix_unitaire), 0)::float AS total,
+           COUNT(*)::int AS lignes
+    FROM intervention_items
+    GROUP BY 1
+    ORDER BY 2 DESC
+  `);
+  res.json({ interventions, byType });
 }));
 
 // ── Présence Pérols ─────────────────────────────────────────

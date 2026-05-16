@@ -35,6 +35,7 @@ const CATEGORY_PALETTE = ['#F4C7D9', '#F2EAB6', '#C9B8DC', '#F2D2A9', '#B7D7E8',
   '#C6E0B4', '#E8E4A0', '#F9E79F', '#BFE6C4', '#AEC8E8']
 
 const CURRENT_MONTH = new Date().getMonth() + 1
+const CURRENT_YEAR = new Date().getFullYear()
 
 // Présence Pérols
 const DAYS = ['LUN', 'MAR', 'MER', 'JEU', 'VEN', 'SAM', 'DIM']
@@ -136,6 +137,29 @@ function isoWeek(d) {
   const ftDay = (firstThu.getUTCDay() + 6) % 7
   firstThu.setUTCDate(firstThu.getUTCDate() - ftDay + 3)
   return 1 + Math.round((x - firstThu) / (7 * 864e5))
+}
+
+/* Indicateurs — calculs d'âge et d'échéance CT */
+function startOfToday() {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+function parseFrDate(s) {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(String(s || '').trim())
+  return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])) : null
+}
+function ageYears(dateMec) {
+  const d = parseFrDate(dateMec)
+  if (!d) return null
+  return (Date.now() - d.getTime()) / (365.25 * 864e5)
+}
+/* Prochaine occurrence du CT — planning annuel glissant (sans année) */
+function nextCtDate(month, day) {
+  const today = startOfToday()
+  let d = new Date(today.getFullYear(), month - 1, day || 1)
+  if (d < today) d = new Date(today.getFullYear() + 1, month - 1, day || 1)
+  return d
 }
 
 /* Impression — règle l'orientation puis lance la boîte d'impression */
@@ -438,13 +462,14 @@ function FlotteApp({ user, onLogout }) {
   const goVehicle = (id) => setView({ name: 'vehicle', id })
   const goDashboard = () => setView({ name: 'dashboard' })
   const goPresence = () => setView({ name: 'presence' })
-  const active = view.name === 'presence' ? 'presence' : 'dashboard'
+  const goStats = () => setView({ name: 'stats' })
+  const active = ['presence', 'stats'].includes(view.name) ? view.name : 'dashboard'
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       <TopBar
         user={user} onLogout={onLogout} active={active}
-        onNav={(n) => (n === 'presence' ? goPresence() : goDashboard())}
+        onNav={(n) => (n === 'presence' ? goPresence() : n === 'stats' ? goStats() : goDashboard())}
       />
       <div style={{ flex: 1, padding: '24px clamp(14px, 3vw, 36px) 60px' }}>
         {loading ? (
@@ -461,6 +486,8 @@ function FlotteApp({ user, onLogout }) {
             vehicleId={view.id} categories={categories}
             onBack={goDashboard} reloadFleet={loadData}
           />
+        ) : view.name === 'stats' ? (
+          <StatsPage categories={categories} vehicles={vehicles} />
         ) : (
           <PresencePage />
         )}
@@ -496,6 +523,7 @@ function TopBar({ user, onLogout, active, onNav }) {
       </button>
       <nav style={{ display: 'flex', gap: 4, background: C.bg, padding: 4, borderRadius: 11 }}>
         {navBtn('dashboard', 'Tableau de bord')}
+        {navBtn('stats', 'Indicateurs')}
         {navBtn('presence', 'Présence Pérols')}
       </nav>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -1616,6 +1644,407 @@ function TeamModal({ drivers, onClose, onSaved }) {
         </div>
       </div>
     </Modal>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════
+   Indicateurs — tableau de pilotage de la flotte
+   ════════════════════════════════════════════════════════════ */
+/* Carte de chiffre-clé */
+function Kpi({ label, value, sub, tone, mono }) {
+  const color = tone === 'danger' ? C.red
+    : tone === 'warn' ? '#9A6B00'
+    : tone === 'ok' ? C.green : C.ink
+  return (
+    <div style={{
+      background: C.panel, border: `1px solid ${C.border}`,
+      borderRadius: 12, padding: '14px 16px',
+    }}>
+      <div style={{ ...S.label, marginBottom: 8 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
+        <span style={{
+          fontFamily: mono ? FONT_MONO : FONT_HEAD,
+          fontSize: 23, fontWeight: 700, color,
+        }}>{value}</span>
+        {sub && <span style={{ fontSize: 13, color: C.muted }}>{sub}</span>}
+      </div>
+    </div>
+  )
+}
+
+/* Bloc de section */
+function StatPanel({ title, children }) {
+  return (
+    <div style={{
+      background: C.panel, border: `1px solid ${C.border}`,
+      borderRadius: 12, padding: '18px 20px', marginBottom: 18,
+    }}>
+      <h2 style={{ fontFamily: FONT_HEAD, fontSize: 16, fontWeight: 700, marginBottom: 16 }}>
+        {title}
+      </h2>
+      {children}
+    </div>
+  )
+}
+
+/* Petit chiffre sur fond doux */
+function MiniStat({ label, value }) {
+  return (
+    <div style={{ background: C.bg, borderRadius: 9, padding: '11px 13px' }}>
+      <div style={{ ...S.label, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 700, color: C.green }}>
+        {value}
+      </div>
+    </div>
+  )
+}
+
+/* Barre horizontale */
+function HBar({ label, value, max, color = C.green, display }) {
+  const pct = max > 0 && value > 0 ? Math.max(3, (value / max) * 100) : 0
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 7 }}>
+      <div style={{
+        width: 160, fontSize: 12.5, whiteSpace: 'nowrap',
+        overflow: 'hidden', textOverflow: 'ellipsis',
+      }} title={label}>{label}</div>
+      <div style={{ flex: 1, background: C.bg, borderRadius: 5, height: 20, overflow: 'hidden' }}>
+        <div style={{ width: pct + '%', height: '100%', background: color, borderRadius: 5 }} />
+      </div>
+      <div style={{
+        width: 100, textAlign: 'right', fontFamily: FONT_MONO,
+        fontWeight: 700, fontSize: 12.5,
+      }}>{display}</div>
+    </div>
+  )
+}
+
+/* Histogramme 12 mois */
+function MonthBars({ data }) {
+  const max = Math.max(1, ...data)
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 5, height: 124 }}>
+      {data.map((n, i) => (
+        <div key={i} style={{
+          flex: 1, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', gap: 4,
+        }}>
+          <span style={{
+            fontSize: 11, fontFamily: FONT_MONO, fontWeight: 700,
+            color: n ? C.ink : 'transparent',
+          }}>{n || '0'}</span>
+          <div style={{
+            width: '100%', height: Math.max(3, (n / max) * 80),
+            background: i + 1 === CURRENT_MONTH ? C.green : '#C6D9C2',
+            borderRadius: '4px 4px 0 0',
+          }} />
+          <span style={{ fontSize: 9.5, color: C.muted }}>{MONTHS_SHORT[i]}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const statSubTitle = { ...S.label, marginBottom: 11 }
+const statEmpty = { fontSize: 13, color: C.muted, fontStyle: 'italic', padding: '6px 0' }
+
+function StatsPage({ categories, vehicles }) {
+  const notify = useToast()
+  const [stats, setStats] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    apiFetch('/stats')
+      .then(setStats)
+      .catch((err) => notify(err.message, 'error'))
+      .finally(() => setLoading(false))
+  }, [notify])
+
+  const interventions = stats?.interventions || []
+  const byType = stats?.byType || []
+
+  /* Agrégat coût / nombre / dernière interv. par véhicule */
+  const perVehicle = useMemo(() => {
+    const m = {}
+    for (const iv of interventions) {
+      const e = (m[iv.vehicle_id] ||= { cost: 0, count: 0, lastDate: '', lastKm: null })
+      e.cost += Number(iv.total) || 0
+      e.count += 1
+      if ((iv.date || '') > e.lastDate) { e.lastDate = iv.date || ''; e.lastKm = iv.kms }
+    }
+    return m
+  }, [interventions])
+
+  /* ── Échéances CT ── */
+  const ctUpcoming = useMemo(() => {
+    const today = startOfToday()
+    const out = []
+    for (const v of vehicles) {
+      if (!v.ct_month) continue
+      const date = nextCtDate(v.ct_month, v.ct_day)
+      const days = Math.round((date - today) / 864e5)
+      if (days <= 60) out.push({ v, date, days })
+    }
+    return out.sort((a, b) => a.days - b.days)
+  }, [vehicles])
+
+  const ctMissing = useMemo(() => vehicles.filter((v) => !v.ct_month), [vehicles])
+
+  const ctByMonth = useMemo(() => {
+    const arr = Array(12).fill(0)
+    for (const v of vehicles) if (v.ct_month >= 1 && v.ct_month <= 12) arr[v.ct_month - 1]++
+    return arr
+  }, [vehicles])
+
+  /* ── Composition ── */
+  const byCategory = useMemo(() => categories.map((c) => ({
+    cat: c, count: vehicles.filter((v) => v.category_id === c.id).length,
+  })), [categories, vehicles])
+
+  const { avgAge, oldest } = useMemo(() => {
+    let sum = 0, n = 0, old = null
+    for (const v of vehicles) {
+      const a = ageYears(v.date_mec)
+      if (a == null) continue
+      sum += a; n++
+      if (!old || a > old.age) old = { v, age: a }
+    }
+    return { avgAge: n ? sum / n : null, oldest: old }
+  }, [vehicles])
+
+  /* ── Coûts ── */
+  const totalCost = useMemo(
+    () => interventions.reduce((s, iv) => s + (Number(iv.total) || 0), 0), [interventions])
+  const yearItems = useMemo(
+    () => interventions.filter((iv) => (iv.date || '').startsWith(String(CURRENT_YEAR))),
+    [interventions])
+  const yearCost = yearItems.reduce((s, iv) => s + (Number(iv.total) || 0), 0)
+  const avgCost = interventions.length ? totalCost / interventions.length : 0
+
+  const topVehicles = useMemo(() => vehicles
+    .map((v) => ({ v, ...(perVehicle[v.id] || { cost: 0, count: 0 }) }))
+    .filter((x) => x.cost > 0)
+    .sort((a, b) => b.cost - a.cost)
+    .slice(0, 5), [vehicles, perVehicle])
+
+  /* ── Activité atelier ── */
+  const trackedVehicles = useMemo(
+    () => vehicles.filter((v) => perVehicle[v.id]), [vehicles, perVehicle])
+  const oldestService = useMemo(() => trackedVehicles
+    .map((v) => ({ v, ...perVehicle[v.id] }))
+    .filter((x) => x.lastDate)
+    .sort((a, b) => a.lastDate.localeCompare(b.lastDate))
+    .slice(0, 6), [trackedVehicles, perVehicle])
+
+  if (loading) {
+    return (
+      <div style={{ textAlign: 'center', color: C.muted, padding: 80, fontSize: 15 }}>
+        Chargement des indicateurs…
+      </div>
+    )
+  }
+
+  const maxCat = Math.max(1, ...byCategory.map((x) => x.count))
+  const maxTop = Math.max(1, ...topVehicles.map((x) => x.cost))
+  const typeRows = byType.filter((t) => Number(t.total) > 0)
+  const maxType = Math.max(1, ...typeRows.map((t) => Number(t.total)))
+  const col2 = {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 26,
+  }
+  const gridStats = {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+    gap: 12, marginBottom: 18,
+  }
+
+  return (
+    <div style={{ maxWidth: 1320, margin: '0 auto' }}>
+      {/* En-tête */}
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
+        flexWrap: 'wrap', gap: 12, marginBottom: 18,
+      }}>
+        <div>
+          <h1 style={{ fontFamily: FONT_HEAD, fontSize: 24, fontWeight: 700 }}>Indicateurs</h1>
+          <p style={{ fontSize: 14, color: C.muted, marginTop: 3 }}>
+            Pilotage de la flotte — {vehicles.length} véhicules · au {formatDate(ymd(new Date()))}
+          </p>
+        </div>
+        <button className="no-print" style={S.btn} onClick={() => doPrint('portrait')}>
+          🖨 Imprimer
+        </button>
+      </div>
+
+      {/* Bandeau de chiffres-clés */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(158px, 1fr))',
+        gap: 12, marginBottom: 20,
+      }}>
+        <Kpi label="Véhicules" value={vehicles.length} />
+        <Kpi label="Âge moyen" value={avgAge != null ? avgAge.toFixed(1) : '—'} sub="ans" />
+        <Kpi label="CT sous 60 jours" value={ctUpcoming.length}
+          tone={ctUpcoming.length ? 'warn' : 'ok'} />
+        <Kpi label="Sans CT planifié" value={ctMissing.length}
+          tone={ctMissing.length ? 'danger' : 'ok'} />
+        <Kpi label={'Coût maintenance ' + CURRENT_YEAR} value={fmtMoney(yearCost)} mono />
+        <Kpi label={'Interventions ' + CURRENT_YEAR} value={yearItems.length} />
+      </div>
+
+      {/* Échéances de contrôle technique */}
+      <StatPanel title="Échéances de contrôle technique">
+        <div style={col2}>
+          <div>
+            <div style={statSubTitle}>Contrôles dans les 60 prochains jours</div>
+            {ctUpcoming.length === 0 ? (
+              <div style={statEmpty}>Aucun CT à échéance dans les 60 jours.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {ctUpcoming.map(({ v, date, days }) => (
+                  <div key={v.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '7px 10px', background: C.bg, borderRadius: 8,
+                  }}>
+                    <span style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 13 }}>
+                      {v.immatriculation || '—'}
+                    </span>
+                    <span style={{
+                      flex: 1, fontSize: 12, color: C.muted, whiteSpace: 'nowrap',
+                      overflow: 'hidden', textOverflow: 'ellipsis',
+                    }}>
+                      {[v.marque, v.modele].filter(Boolean).join(' ')}
+                    </span>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 12.5 }}>{ddmm(date)}</span>
+                    <span style={{
+                      fontFamily: FONT_MONO, fontWeight: 700, fontSize: 11, color: '#fff',
+                      padding: '2px 7px', borderRadius: 20,
+                      background: days <= 14 ? C.red : days <= 30 ? '#9A6B00' : C.green,
+                    }}>
+                      {days <= 0 ? 'auj.' : 'J-' + days}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div>
+            <div style={statSubTitle}>Répartition des CT sur l'année</div>
+            <MonthBars data={ctByMonth} />
+            <div style={{
+              marginTop: 12, fontSize: 12.5,
+              color: ctMissing.length ? C.red : C.muted,
+            }}>
+              {ctMissing.length
+                ? `⚠ ${ctMissing.length} véhicule(s) sans mois de CT renseigné`
+                : 'Tous les véhicules ont un mois de CT renseigné.'}
+            </div>
+          </div>
+        </div>
+      </StatPanel>
+
+      {/* Composition de la flotte */}
+      <StatPanel title="Composition de la flotte">
+        <div style={col2}>
+          <div>
+            <div style={statSubTitle}>Véhicules par catégorie</div>
+            {byCategory.length === 0 ? (
+              <div style={statEmpty}>Aucune catégorie.</div>
+            ) : byCategory.map(({ cat, count }) => (
+              <HBar key={cat.id} label={cat.name} value={count} max={maxCat}
+                color={cat.color} display={count + ' véh.'} />
+            ))}
+          </div>
+          <div>
+            <div style={statSubTitle}>Âge de la flotte</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <MiniStat label="Âge moyen"
+                value={avgAge != null ? avgAge.toFixed(1) + ' ans' : '—'} />
+              <MiniStat label="Véhicule le plus ancien"
+                value={oldest
+                  ? `${oldest.v.immatriculation || '—'} · ${oldest.age.toFixed(0)} ans`
+                  : '—'} />
+            </div>
+          </div>
+        </div>
+      </StatPanel>
+
+      {/* Coûts de maintenance */}
+      <StatPanel title="Coûts de maintenance">
+        <div style={gridStats}>
+          <MiniStat label="Coût total (historique)" value={fmtMoney(totalCost)} />
+          <MiniStat label={'Coût ' + CURRENT_YEAR} value={fmtMoney(yearCost)} />
+          <MiniStat label="Coût moyen / intervention" value={fmtMoney(avgCost)} />
+          <MiniStat label="Interventions chiffrées" value={interventions.length} />
+        </div>
+        <div style={col2}>
+          <div>
+            <div style={statSubTitle}>Top 5 véhicules les plus coûteux</div>
+            {topVehicles.length === 0 ? (
+              <div style={statEmpty}>Aucune intervention chiffrée pour le moment.</div>
+            ) : topVehicles.map(({ v, cost, count }) => (
+              <HBar key={v.id}
+                label={`${v.immatriculation || '—'} · ${count} interv.`}
+                value={cost} max={maxTop} display={fmtMoney(cost)} />
+            ))}
+          </div>
+          <div>
+            <div style={statSubTitle}>Coûts par type de pièce</div>
+            {typeRows.length === 0 ? (
+              <div style={statEmpty}>Aucune donnée de coût.</div>
+            ) : typeRows.map((t) => (
+              <HBar key={t.type} label={t.type} value={Number(t.total)}
+                max={maxType} color={C.blue} display={fmtMoney(t.total)} />
+            ))}
+          </div>
+        </div>
+      </StatPanel>
+
+      {/* Activité atelier */}
+      <StatPanel title="Activité atelier">
+        <div style={gridStats}>
+          <MiniStat label="Véhicules avec historique"
+            value={`${trackedVehicles.length} / ${vehicles.length}`} />
+          <MiniStat label="Interventions totales" value={interventions.length} />
+          <MiniStat label={'Interventions ' + CURRENT_YEAR} value={yearItems.length} />
+          <MiniStat label="Sans intervention enregistrée"
+            value={vehicles.length - trackedVehicles.length} />
+        </div>
+        <div style={statSubTitle}>Entretiens les plus anciens (véhicules suivis)</div>
+        {oldestService.length === 0 ? (
+          <div style={statEmpty}>Aucun historique d'intervention enregistré.</div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{
+              width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 560,
+            }}>
+              <thead>
+                <tr>
+                  {['Immatriculation', 'Véhicule', 'Dernière intervention', 'Dernier km', 'Interv.']
+                    .map((h, i) => (
+                      <th key={h} style={{ ...thBase, textAlign: i > 2 ? 'right' : 'left' }}>{h}</th>
+                    ))}
+                </tr>
+              </thead>
+              <tbody>
+                {oldestService.map(({ v, lastDate, lastKm, count }) => (
+                  <tr key={v.id}>
+                    <td style={{ ...tdBase, fontFamily: FONT_MONO, fontWeight: 700 }}>
+                      {v.immatriculation || '—'}
+                    </td>
+                    <td style={tdBase}>
+                      {[v.marque, v.modele].filter(Boolean).join(' ') || '—'}
+                    </td>
+                    <td style={{ ...tdBase, fontFamily: FONT_MONO }}>{formatDate(lastDate)}</td>
+                    <td style={{ ...tdBase, fontFamily: FONT_MONO, textAlign: 'right' }}>
+                      {fmtKm(lastKm)}
+                    </td>
+                    <td style={{ ...tdBase, textAlign: 'right' }}>{count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </StatPanel>
+    </div>
   )
 }
 

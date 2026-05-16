@@ -34,10 +34,17 @@ No test runner or linter is configured.
 
 All logic and components are inline in `App.jsx`: `LoginScreen`, `FlotteApp`,
 `TopBar`, `Dashboard`, `VehicleModal`, `CategoryModal`, `VehicleDetail`,
-`InterventionModal`, `PresencePage`, `TeamModal`, `Modal`, `ConfirmDialog`,
-`ToastHost`. No router, no state library. Navigation is a `view` state object
-with three views: `dashboard`, `vehicle`, `presence` (the `TopBar` nav switches
-between the fleet dashboard and the Pérols presence sheet).
+`InterventionModal`, `StatsPage`, `PresencePage`, `TeamModal`, `Modal`,
+`ConfirmDialog`, `ToastHost`. No router, no state library. Navigation is a
+`view` state object with four views: `dashboard`, `vehicle`, `stats`,
+`presence` (the `TopBar` nav switches between the fleet dashboard, the
+indicators page and the Pérols presence sheet).
+
+- **StatsPage** = the read-only indicators tab. It fetches `GET /api/stats`
+  (per-intervention cost rows + cost-by-part-type) and crosses it with the
+  already-loaded `categories`/`vehicles` to derive KPIs: CT due within 60 days,
+  vehicles with no CT month, fleet age, costs per vehicle/part-type, workshop
+  activity. CSS-only bar charts (`HBar` / `MonthBars`), no chart library.
 
 - **`apiFetch()`** wraps `fetch`, injects the JWT, auto-logs-out on 401.
 - **Auth:** token in `localStorage` (`flotte-token` / `flotte-user`).
@@ -75,6 +82,8 @@ between the fleet dashboard and the Pérols presence sheet).
   - `GET /api/vehicles/:id/interventions`
   - `POST /api/interventions`, `PUT/DELETE /api/interventions/:id`
     (PUT/POST replace the full `intervention_items` set transactionally)
+  - `GET /api/stats` — fleet-wide aggregates for the indicators page
+    (per-intervention cost rows + cost by part type)
   - `GET/PUT /api/presence/drivers` (PUT = bulk replace of the team)
   - `GET/PUT /api/presence/week/:weekStart` (week grid + responsable)
   - `POST /api/send-mail` — emails an HTML table to `MAIL_TO`
