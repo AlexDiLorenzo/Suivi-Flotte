@@ -55,6 +55,32 @@ app.post("/api/auth/login", wrap(async (req, res) => {
   res.json({ token, username });
 }));
 
+// Modification de l'identifiant et/ou du mot de passe du compte connecté
+app.put("/api/auth/credentials", auth, wrap(async (req, res) => {
+  const { currentPassword, newUsername, newPassword } = req.body;
+  const { rows } = await pool.query("SELECT * FROM users WHERE username=$1", [req.user.username]);
+  if (!rows.length) return res.status(404).json({ error: "Compte introuvable" });
+  const ok = await bcrypt.compare(currentPassword || "", rows[0].password_hash);
+  if (!ok) return res.status(401).json({ error: "Mot de passe actuel incorrect" });
+  const username = (newUsername || rows[0].username).trim();
+  if (!username) return res.status(400).json({ error: "Identifiant requis" });
+  if (newPassword && newPassword.length < 4) {
+    return res.status(400).json({ error: "Nouveau mot de passe : 4 caractères minimum" });
+  }
+  const hash = newPassword ? await bcrypt.hash(newPassword, 10) : rows[0].password_hash;
+  try {
+    await pool.query(
+      "UPDATE users SET username=$1, password_hash=$2 WHERE id=$3",
+      [username, hash, rows[0].id]
+    );
+  } catch (err) {
+    if (err.code === "23505") return res.status(409).json({ error: "Cet identifiant est déjà pris" });
+    throw err;
+  }
+  const token = jwt.sign({ id: rows[0].id, username }, JWT_SECRET, { expiresIn: "30d" });
+  res.json({ token, username });
+}));
+
 // ── Toutes les routes de données nécessitent l'authentification ──
 app.use("/api/categories", auth);
 app.use("/api/vehicles", auth);

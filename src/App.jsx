@@ -423,7 +423,7 @@ function Logo({ size = 38 }) {
 /* ════════════════════════════════════════════════════════════
    Application — racine authentifiée
    ════════════════════════════════════════════════════════════ */
-function FlotteApp({ user, onLogout }) {
+function FlotteApp({ user, onLogout, onUserChange }) {
   const notify = useToast()
   const [categories, setCategories] = useState([])
   const [vehicles, setVehicles] = useState([])
@@ -456,7 +456,7 @@ function FlotteApp({ user, onLogout }) {
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       <TopBar
-        user={user} onLogout={onLogout} active={active}
+        user={user} onLogout={onLogout} onUserChange={onUserChange} active={active}
         onNav={(n) => (n === 'presence' ? goPresence() : n === 'stats' ? goStats() : goDashboard())}
       />
       <div style={{ flex: 1, padding: '24px clamp(14px, 3vw, 36px) 60px' }}>
@@ -484,7 +484,8 @@ function FlotteApp({ user, onLogout }) {
   )
 }
 
-function TopBar({ user, onLogout, active, onNav }) {
+function TopBar({ user, onLogout, onUserChange, active, onNav }) {
+  const [accountOpen, setAccountOpen] = useState(false)
   const navBtn = (id, label) => (
     <button onClick={() => onNav(id)} style={{
       border: 'none', borderRadius: 8, padding: '7px 14px', fontSize: 13.5, fontWeight: 600,
@@ -493,6 +494,7 @@ function TopBar({ user, onLogout, active, onNav }) {
     }}>{label}</button>
   )
   return (
+    <>
     <header className="no-print" style={{
       background: C.panel, borderBottom: `1px solid ${C.border}`,
       padding: '12px clamp(14px, 3vw, 36px)', display: 'flex',
@@ -518,9 +520,94 @@ function TopBar({ user, onLogout, active, onNav }) {
         <span style={{ fontSize: 13.5, color: C.muted }}>
           Connecté : <strong style={{ color: C.ink }}>{user}</strong>
         </span>
+        <button style={S.btn} onClick={() => setAccountOpen(true)}>Mon compte</button>
         <button style={S.btn} onClick={onLogout}>Déconnexion</button>
       </div>
     </header>
+    {accountOpen && (
+      <AccountModal user={user} onClose={() => setAccountOpen(false)}
+        onSaved={onUserChange} />
+    )}
+    </>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════
+   Mon compte — modification de l'identifiant et du mot de passe
+   ════════════════════════════════════════════════════════════ */
+function AccountModal({ user, onClose, onSaved }) {
+  const notify = useToast()
+  const [newUsername, setNewUsername] = useState(user || '')
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const save = async (e) => {
+    e.preventDefault()
+    if (!currentPassword) { notify('Saisissez votre mot de passe actuel', 'error'); return }
+    if (newPassword && newPassword !== confirmPassword) {
+      notify('Les deux mots de passe ne correspondent pas', 'error'); return
+    }
+    setBusy(true)
+    try {
+      const d = await apiFetch('/auth/credentials', {
+        method: 'PUT',
+        body: JSON.stringify({
+          currentPassword,
+          newUsername: newUsername.trim(),
+          newPassword: newPassword || undefined,
+        }),
+      })
+      localStorage.setItem('flotte-token', d.token)
+      localStorage.setItem('flotte-user', d.username)
+      onSaved(d.username)
+      notify('Identifiants mis à jour', 'success')
+      onClose()
+    } catch (err) {
+      notify(err.message, 'error')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="Mon compte" onClose={onClose} width={420}>
+      <form onSubmit={save} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>
+          Modifiez l'identifiant et le mot de passe de connexion. Le mot de passe
+          actuel est requis pour confirmer.
+        </p>
+        <div>
+          <label style={S.label}>Identifiant</label>
+          <input style={S.input} value={newUsername} autoComplete="username"
+            onChange={(e) => setNewUsername(e.target.value)} />
+        </div>
+        <div>
+          <label style={S.label}>Mot de passe actuel</label>
+          <input style={S.input} type="password" value={currentPassword}
+            autoComplete="current-password"
+            onChange={(e) => setCurrentPassword(e.target.value)} />
+        </div>
+        <div>
+          <label style={S.label}>Nouveau mot de passe</label>
+          <input style={S.input} type="password" value={newPassword}
+            autoComplete="new-password" placeholder="Laisser vide pour ne pas changer"
+            onChange={(e) => setNewPassword(e.target.value)} />
+        </div>
+        <div>
+          <label style={S.label}>Confirmer le nouveau mot de passe</label>
+          <input style={S.input} type="password" value={confirmPassword}
+            autoComplete="new-password"
+            onChange={(e) => setConfirmPassword(e.target.value)} />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 4 }}>
+          <button type="button" style={S.btn} onClick={onClose}>Annuler</button>
+          <button type="submit" style={{ ...S.btn, ...S.btnPrimary }} disabled={busy}>
+            {busy ? '…' : 'Enregistrer'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
@@ -2271,7 +2358,7 @@ export default function App() {
   return (
     <ToastHost>
       {hasToken && user ? (
-        <FlotteApp user={user} onLogout={logout} />
+        <FlotteApp user={user} onLogout={logout} onUserChange={setUser} />
       ) : (
         <LoginScreen onAuth={(u) => { setUser(u); setHasToken(true) }} />
       )}
