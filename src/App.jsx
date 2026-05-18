@@ -411,12 +411,8 @@ function LoginScreen({ onAuth }) {
 
 function Logo({ size = 38 }) {
   return (
-    <div style={{
-      width: size, height: size, borderRadius: size * 0.26, background: C.green,
-      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-    }}>
-      <span style={{ fontFamily: FONT_HEAD, fontWeight: 700, color: C.yellow, fontSize: size * 0.4 }}>MD</span>
-    </div>
+    <img src="/logo.png" alt="Montpellier Dépannage"
+      style={{ height: size, width: 'auto', flexShrink: 0, display: 'block' }} />
   )
 }
 
