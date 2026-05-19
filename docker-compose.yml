@@ -21,6 +21,7 @@ services:
       - RESEND_API_KEY=${FL_RESEND_API_KEY}
       - RESEND_FROM=${FL_RESEND_FROM}
       - MAIL_TO=${FL_MAIL_TO:-compta@montpellierdepannage.com}
+      - PILOTAGE_SECRET=${FL_PILOTAGE_SECRET:-}
     expose: ["3000"]
     networks: [flotte-net, web]
     depends_on: [flotte-db]

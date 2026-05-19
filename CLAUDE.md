@@ -97,6 +97,11 @@ indicators page and the Pérols presence sheet).
     (PUT/POST replace the full `intervention_items` set transactionally)
   - `GET /api/stats` — fleet-wide aggregates for the indicators page
     (per-intervention cost rows + cost by part type)
+  - `GET /api/pilotage-public/snapshot` — **no JWT**, auth by
+    `Authorization: Bearer PILOTAGE_SECRET`. Read-only CT counters
+    (`fleet_considered` / `ct_planned` / `ct_overdue` / `ct_missing`)
+    consumed by the Montpellier Dépannage pilotage dashboard. Disabled
+    (503) if `PILOTAGE_SECRET` is unset.
   - `GET/PUT /api/presence/drivers` (PUT = bulk replace of the team)
   - `GET/PUT /api/presence/week/:weekStart` (week grid + responsable)
   - `POST /api/send-mail` — emails an HTML table to `MAIL_TO`

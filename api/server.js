@@ -417,6 +417,40 @@ app.post("/api/send-mail", wrap(async (req, res) => {
   }
 }));
 
+// ── Snapshot pilotage (lecture seule, secret partagé) ───────
+// Consommé par le dashboard de pilotage du site web (Montpellier
+// Dépannage). Pas de JWT : auth par header Authorization: Bearer
+// PILOTAGE_SECRET. Si le secret n'est pas configuré, l'endpoint est
+// désactivé (503). Renvoie les compteurs de contrôle technique de la
+// flotte ; le calcul du % et du statut couleur est fait côté site web.
+app.get("/api/pilotage-public/snapshot", wrap(async (req, res) => {
+  const secret = process.env.PILOTAGE_SECRET;
+  if (!secret) return res.status(503).json({ error: "Pilotage non configuré" });
+  if ((req.headers.authorization || "") !== `Bearer ${secret}`) {
+    return res.status(401).json({ error: "Non autorisé" });
+  }
+
+  // Date du jour en ISO (YYYY-MM-DD) — comparaison lexicale directe
+  // avec vehicles.ct_date qui est stockée au même format.
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Véhicules « suivis » = en exploitation : on écarte les statuts
+  // hors-parc (stocké / cédé / hors service) qui ne passent pas le CT.
+  const offFleet = "statut NOT IN ('Stocké','Hors service','En cession')";
+  const { rows } = await pool.query(
+    `SELECT
+       COUNT(*)::int                                                    AS vehicles_total,
+       COUNT(*) FILTER (WHERE ${offFleet})::int                         AS fleet_considered,
+       COUNT(*) FILTER (WHERE ${offFleet} AND ct_date <> '' AND ct_date >= $1)::int AS ct_planned,
+       COUNT(*) FILTER (WHERE ${offFleet} AND ct_date <> '' AND ct_date <  $1)::int AS ct_overdue,
+       COUNT(*) FILTER (WHERE ${offFleet} AND ct_date =  '')::int       AS ct_missing
+     FROM vehicles`,
+    [today]
+  );
+
+  res.json({ ts: Date.now(), ...rows[0] });
+}));
+
 // ── Gestion d'erreurs ───────────────────────────────────────
 app.use((err, _req, res, _next) => {
   console.error(err);
