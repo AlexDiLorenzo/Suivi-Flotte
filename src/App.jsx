@@ -1532,7 +1532,7 @@ function PresencePage() {
         <button style={S.btn} onClick={() => doPrint('portrait')}>🖨 Imprimer</button>
         <button style={{ ...S.btn, ...S.btnPrimary }} disabled={sending || loading}
           onClick={() => setSendConfirm(true)}>
-          {sending ? 'Envoi…' : '✉ Envoyer à la compta'}
+          {sending ? 'Envoi…' : '✉ Envoyer à la direction'}
         </button>
       </div>
 
