@@ -135,6 +135,22 @@ export async function initDB() {
         value TEXT NOT NULL DEFAULT ''
       );
 
+      -- ── Planning hebdomadaire (affichage atelier) ─────────────
+      -- Grille lundi→dimanche, mêmes employés (presence_drivers).
+      -- Saisie indépendante : codes P / AS / RJ / R / CP / OPS.
+      CREATE TABLE IF NOT EXISTS planning_entries (
+        week_start TEXT NOT NULL,
+        driver_id INT NOT NULL REFERENCES presence_drivers(id) ON DELETE CASCADE,
+        lun TEXT NOT NULL DEFAULT '',
+        mar TEXT NOT NULL DEFAULT '',
+        mer TEXT NOT NULL DEFAULT '',
+        jeu TEXT NOT NULL DEFAULT '',
+        ven TEXT NOT NULL DEFAULT '',
+        sam TEXT NOT NULL DEFAULT '',
+        dim TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (week_start, driver_id)
+      );
+
       -- Date du prochain contrôle technique (remplace le planning mois/jour)
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS ct_date TEXT NOT NULL DEFAULT '';
       -- Échéance d'assurance et statut d'exploitation du véhicule

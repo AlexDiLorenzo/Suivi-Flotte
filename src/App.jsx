@@ -65,6 +65,18 @@ const PRESENCE_CODES = [
 const CODE_BG = Object.fromEntries(PRESENCE_CODES.map((c) => [c.code, c.bg]))
 const MAIL_TO = 'compta@montpellierdepannage.com'
 
+// Planning hebdomadaire — options par cellule (Opération spéciale = couleur flashy)
+const PLANNING_OPTIONS = [
+  { code: 'P', label: 'Présent', bg: '#C6E0B4' },
+  { code: 'AS', label: 'Astreinte', bg: '#B7D7E8' },
+  { code: 'RJ', label: 'Repos jour', bg: '#ECEBE3' },
+  { code: 'R', label: 'Repos', bg: '#D3D1C7' },
+  { code: 'CP', label: 'Congés', bg: '#F9E79F' },
+  { code: 'OPS', label: 'Opération spéciale', bg: '#FF3DA5' },
+]
+const PLANNING_BG = Object.fromEntries(PLANNING_OPTIONS.map((o) => [o.code, o.bg]))
+const PLANNING_LABEL = Object.fromEntries(PLANNING_OPTIONS.map((o) => [o.code, o.label]))
+
 // Week-end pré-rempli par défaut ; un week-end vide est considéré comme « WE »
 const WEEKEND_DEFAULT = 'WE'
 const isWeekendDate = (dt) => dt.getDay() === 0 || dt.getDay() === 6
@@ -436,6 +448,57 @@ function generateFrankPdf({ monthLabel, periodLabel, rows, fileName }) {
   doc.save(fileName)
 }
 
+/* Génération PDF (un clic) — planning hebdomadaire, format paysage.
+   Grand et lisible, pensé pour l'impression et l'affichage atelier. */
+function generatePlanningPdf({ weekNum, range, drivers, grid, dayDates, fileName }) {
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(17)
+  doc.text(`PLANNING — SEMAINE ${weekNum}`, 10, 15)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11)
+  doc.text(`Montpellier Dépannage · ${range}`, 10, 22)
+
+  const head = ['DÉPANNEUR', ...DAYS.map((d, i) => `${d}\n${ddmm(dayDates[i])}`)]
+  const body = drivers.map((dr) => {
+    const row = grid[dr.id] || {}
+    return [dr.nom, ...DAY_KEYS.map((k) => PLANNING_LABEL[row[k]] || '')]
+  })
+
+  autoTable(doc, {
+    head: [head], body, startY: 27, margin: { left: 8, right: 8 },
+    styles: {
+      fontSize: 10, cellPadding: 2.4, halign: 'center', valign: 'middle',
+      lineColor: [140, 140, 140], lineWidth: 0.2, textColor: [26, 25, 15],
+      minCellHeight: 12, overflow: 'linebreak',
+    },
+    headStyles: { fillColor: [44, 97, 38], textColor: [255, 255, 255], fontSize: 11, halign: 'center' },
+    columnStyles: { 0: { halign: 'left', fontStyle: 'bold', cellWidth: 38 } },
+    didParseCell: (data) => {
+      if (data.section === 'body' && data.column.index > 0) {
+        const dr = drivers[data.row.index]
+        const code = (grid[dr.id] || {})[DAY_KEYS[data.column.index - 1]]
+        const rgb = hexToRgb(PLANNING_BG[code])
+        if (rgb) data.cell.styles.fillColor = rgb
+      }
+    },
+  })
+
+  // Légende avec pastilles de couleur
+  let y = doc.lastAutoTable.finalY + 9
+  doc.setFontSize(9.5); doc.setFont('helvetica', 'bold')
+  doc.text('Légende :', 10, y)
+  let x = 10 + doc.getTextWidth('Légende :') + 5
+  doc.setFont('helvetica', 'normal')
+  for (const o of PLANNING_OPTIONS) {
+    const rgb = hexToRgb(o.bg) || [255, 255, 255]
+    doc.setFillColor(rgb[0], rgb[1], rgb[2])
+    doc.setDrawColor(140, 140, 140)
+    doc.rect(x, y - 3.6, 5, 5, 'FD')
+    doc.text(o.label, x + 6.5, y)
+    x += 6.5 + doc.getTextWidth(o.label) + 9
+  }
+  doc.save(fileName)
+}
+
 /* ════════════════════════════════════════════════════════════
    Styles partagés
    ════════════════════════════════════════════════════════════ */
@@ -665,14 +728,16 @@ function FlotteApp({ user, onLogout, onUserChange }) {
   const goStats = () => setView({ name: 'stats' })
   const goRecap = () => setView({ name: 'recap' })
   const goFrank = () => setView({ name: 'frank' })
-  const active = ['presence', 'stats', 'recap', 'frank'].includes(view.name) ? view.name : 'dashboard'
+  const goPlanning = () => setView({ name: 'planning' })
+  const active = ['presence', 'stats', 'recap', 'frank', 'planning'].includes(view.name) ? view.name : 'dashboard'
 
   const onNav = (n) =>
     n === 'presence' ? goPresence()
       : n === 'stats' ? goStats()
         : n === 'recap' ? goRecap()
           : n === 'frank' ? goFrank()
-            : goDashboard()
+            : n === 'planning' ? goPlanning()
+              : goDashboard()
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -701,6 +766,8 @@ function FlotteApp({ user, onLogout, onUserChange }) {
           <MonthlyRecap />
         ) : view.name === 'frank' ? (
           <FrankPage />
+        ) : view.name === 'planning' ? (
+          <PlanningPage />
         ) : (
           <PresencePage />
         )}
@@ -740,6 +807,7 @@ function TopBar({ user, onLogout, onUserChange, active, onNav }) {
         {navBtn('dashboard', 'Tableau de bord')}
         {navBtn('stats', 'Indicateurs')}
         {navBtn('presence', 'Présence Pérols')}
+        {navBtn('planning', 'Planning')}
         {navBtn('recap', 'Récapitulatif mensuel')}
         {navBtn('frank', 'Suivi Frank')}
       </nav>
@@ -2309,6 +2377,180 @@ function FrankPage() {
           confirmLabel="Envoyer" onConfirm={send} onClose={() => setSendConfirm(false)}
         />
       )}
+    </div>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════
+   Planning hebdomadaire — grille lun→dim, affichage atelier
+   ════════════════════════════════════════════════════════════ */
+function PlanningPage() {
+  const notify = useToast()
+  const [monday, setMonday] = useState(() => mondayOf(new Date()))
+  const weekStart = ymd(monday)
+  const weekNum = isoWeek(monday)
+  const dayDates = DAY_KEYS.map((_, i) => addDays(monday, i))
+  const range = `du ${ddmm(dayDates[0])} au ${ddmm(dayDates[6])} ${dayDates[6].getFullYear()}`
+
+  const [drivers, setDrivers] = useState([])
+  const [grid, setGrid] = useState({})
+  const [loading, setLoading] = useState(true)
+  const [saveState, setSaveState] = useState('saved') // 'saving' | 'saved'
+  const skipSave = useRef(true)
+
+  // Chargement de la semaine
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+    skipSave.current = true
+    Promise.all([apiFetch('/presence/drivers'), apiFetch('/planning/week/' + weekStart)])
+      .then(([drv, wk]) => {
+        if (!alive) return
+        setDrivers(drv)
+        setGrid(wk.entries || {})
+      })
+      .catch((err) => { if (alive) notify(err.message, 'error') })
+      .finally(() => {
+        if (!alive) return
+        setLoading(false)
+        setSaveState('saved')
+        setTimeout(() => { skipSave.current = false }, 0)
+      })
+    return () => { alive = false }
+  }, [weekStart, notify])
+
+  // Enregistrement automatique (anti-rebond 700 ms)
+  useEffect(() => {
+    if (skipSave.current || loading) return
+    setSaveState('saving')
+    const t = setTimeout(async () => {
+      try {
+        const entries = {}
+        for (const d of drivers) entries[d.id] = grid[d.id] || {}
+        await apiFetch('/planning/week/' + weekStart, {
+          method: 'PUT',
+          body: JSON.stringify({ entries }),
+        })
+        setSaveState('saved')
+      } catch (err) {
+        notify(err.message, 'error')
+      }
+    }, 700)
+    return () => clearTimeout(t)
+  }, [grid, drivers, weekStart, loading, notify])
+
+  const setCell = (driverId, dayKey, value) =>
+    setGrid((g) => ({ ...g, [driverId]: { ...(g[driverId] || {}), [dayKey]: value } }))
+
+  const downloadPdf = () =>
+    generatePlanningPdf({ weekNum, range, drivers, grid, dayDates, fileName: `planning_S${weekNum}_${weekStart}.pdf` })
+
+  return (
+    <div style={{ maxWidth: 1320, margin: '0 auto' }}>
+      {/* Barre d'outils */}
+      <div className="no-print" style={{
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16,
+      }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button style={S.btn} onClick={() => setMonday((m) => mondayOf(addDays(m, -7)))}>◀</button>
+          <button style={S.btn} onClick={() => setMonday(mondayOf(new Date()))}>Cette semaine</button>
+          <button style={S.btn} onClick={() => setMonday((m) => mondayOf(addDays(m, 7)))}>▶</button>
+        </div>
+        <span style={{ fontSize: 13, color: C.muted }}>
+          {saveState === 'saving' ? 'Enregistrement…' : 'Enregistré ✓'}
+        </span>
+        <div style={{ flex: 1 }} />
+        <button style={S.btn} onClick={() => doPrint('landscape')}>🖨 Imprimer</button>
+        <button style={{ ...S.btn, ...S.btnPrimary }} disabled={loading} onClick={downloadPdf}>
+          ⬇ Télécharger PDF
+        </button>
+      </div>
+
+      {/* Zone imprimable */}
+      <div className="print-area" style={{
+        background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: '22px 24px',
+      }}>
+        <h1 style={{ fontFamily: FONT_HEAD, fontSize: 24, fontWeight: 700, textTransform: 'uppercase' }}>
+          Planning — Semaine {weekNum}
+        </h1>
+        <p style={{ fontSize: 14, color: C.muted, marginTop: 2 }}>{range}</p>
+
+        {loading ? (
+          <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>Chargement…</div>
+        ) : drivers.length === 0 ? (
+          <div style={{
+            padding: 36, textAlign: 'center', color: C.muted,
+            border: `1px dashed ${C.border}`, borderRadius: 10, marginTop: 14,
+          }}>
+            Aucun dépanneur. L'équipe se gère depuis l'onglet « Présence Pérols ».
+          </div>
+        ) : (
+          <div className="tablewrap" style={{ overflowX: 'auto', marginTop: 14 }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 760, fontSize: 14 }}>
+              <thead>
+                <tr>
+                  <th style={{ ...thBase, textAlign: 'left', minWidth: 150, fontSize: 13 }}>DÉPANNEUR</th>
+                  {DAYS.map((d, i) => {
+                    const wknd = i >= 5
+                    return (
+                      <th key={d} style={{
+                        ...thBase, minWidth: 110, fontSize: 13,
+                        background: wknd ? '#DCDAD0' : '#EDECE4',
+                      }}>
+                        {d}<br />
+                        <span style={{ fontWeight: 400, fontSize: 11 }}>{ddmm(dayDates[i])}</span>
+                      </th>
+                    )
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {drivers.map((dr) => (
+                  <tr key={dr.id}>
+                    <td style={{ ...tdBase, fontWeight: 700, fontSize: 14 }}>{dr.nom}</td>
+                    {DAY_KEYS.map((k) => {
+                      const v = (grid[dr.id] || {})[k] || ''
+                      return (
+                        <td key={k} style={{ ...tdBase, padding: 4, textAlign: 'center' }}>
+                          <select value={v} onChange={(e) => setCell(dr.id, k, e.target.value)}
+                            style={{
+                              width: '100%', padding: '10px 4px', borderRadius: 7, fontSize: 13.5,
+                              fontWeight: 700, border: `1px solid ${C.border}`,
+                              textAlign: 'center', textAlignLast: 'center',
+                              background: PLANNING_BG[v] || '#fff',
+                              color: v === 'OPS' ? '#fff' : C.ink,
+                            }}>
+                            <option value="">—</option>
+                            {PLANNING_OPTIONS.map((o) => (
+                              <option key={o.code} value={o.code}>{o.label}</option>
+                            ))}
+                          </select>
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Légende */}
+        <div style={{ marginTop: 18 }}>
+          <div style={S.label}>Légende</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+            {PLANNING_OPTIONS.map((o) => (
+              <span key={o.code} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13,
+                background: o.bg, color: o.code === 'OPS' ? '#fff' : C.ink,
+                padding: '5px 12px', borderRadius: 20, fontWeight: 600,
+              }}>
+                {o.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

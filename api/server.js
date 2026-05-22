@@ -86,6 +86,7 @@ app.use("/api/categories", auth);
 app.use("/api/vehicles", auth);
 app.use("/api/interventions", auth);
 app.use("/api/presence", auth);
+app.use("/api/planning", auth);
 app.use("/api/recap", auth);
 app.use("/api/recap-config", auth);
 app.use("/api/frank-config", auth);
@@ -369,6 +370,50 @@ app.put("/api/presence/week/:weekStart", wrap(async (req, res) => {
     for (const [driverId, c] of Object.entries(entries || {})) {
       await client.query(
         `INSERT INTO presence_entries
+           (week_start, driver_id, lun, mar, mer, jeu, ven, sam, dim)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          ws, Number(driverId), c.lun || "", c.mar || "", c.mer || "",
+          c.jeu || "", c.ven || "", c.sam || "", c.dim || "",
+        ]
+      );
+    }
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+// ── Planning hebdomadaire ───────────────────────────────────
+// Grille lundi→dimanche par employé (codes P / AS / RJ / R / CP / OPS).
+app.get("/api/planning/week/:weekStart", wrap(async (req, res) => {
+  const { rows } = await pool.query(
+    "SELECT * FROM planning_entries WHERE week_start=$1", [req.params.weekStart]
+  );
+  const map = {};
+  for (const e of rows) {
+    map[e.driver_id] = {
+      lun: e.lun, mar: e.mar, mer: e.mer, jeu: e.jeu,
+      ven: e.ven, sam: e.sam, dim: e.dim,
+    };
+  }
+  res.json({ entries: map });
+}));
+
+app.put("/api/planning/week/:weekStart", wrap(async (req, res) => {
+  const ws = req.params.weekStart;
+  const { entries } = req.body;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM planning_entries WHERE week_start=$1", [ws]);
+    for (const [driverId, c] of Object.entries(entries || {})) {
+      await client.query(
+        `INSERT INTO planning_entries
            (week_start, driver_id, lun, mar, mer, jeu, ven, sam, dim)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [

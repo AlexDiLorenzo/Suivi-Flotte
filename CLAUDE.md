@@ -34,12 +34,22 @@ No test runner or linter is configured.
 
 All logic and components are inline in `App.jsx`: `LoginScreen`, `FlotteApp`,
 `TopBar`, `Dashboard`, `VehicleModal`, `CategoryModal`, `VehicleDetail`,
-`InterventionModal`, `StatsPage`, `PresencePage`, `MonthlyRecap`, `FrankPage`,
-`TeamModal`, `Modal`, `ConfirmDialog`, `ToastHost`. No router, no state library.
-Navigation is a `view` state object with six views: `dashboard`, `vehicle`,
-`stats`, `presence`, `recap`, `frank` (the `TopBar` nav switches between the
-fleet dashboard, the indicators page, the Pérols presence sheet, the monthly
-recap and the Frank on-call summary).
+`InterventionModal`, `StatsPage`, `PresencePage`, `PlanningPage`, `MonthlyRecap`,
+`FrankPage`, `TeamModal`, `Modal`, `ConfirmDialog`, `ToastHost`. No router, no
+state library. Navigation is a `view` state object with seven views: `dashboard`,
+`vehicle`, `stats`, `presence`, `planning`, `recap`, `frank` (the `TopBar` nav
+switches between the fleet dashboard, the indicators page, the Pérols presence
+sheet, the weekly planning, the monthly recap and the Frank on-call summary).
+
+- **PlanningPage** = the **Planning** tab: a weekly Mon→Sun grid (same
+  `presence_drivers` rows) built for wall display / printing. **Independent,
+  editable** data (not derived from presence) with its own six options
+  `PLANNING_OPTIONS` — `P` Présent / `AS` Astreinte / `RJ` Repos jour / `R` Repos
+  / `CP` Congés / `OPS` Opération spéciale (flashy pink `#FF3DA5`). Same weekly
+  `mondayOf`/auto-save (700 ms, `skipSave`) pattern as `PresencePage`, stored in
+  its own `planning_entries` table (`GET/PUT /api/planning/week/:weekStart`, no
+  responsable). Actions: **Imprimer** (`doPrint('landscape')`) and **Télécharger
+  PDF** (`generatePlanningPdf`, landscape, large cells + coloured legend chips).
 
 **Single source of truth = the weekly presence sheet.** The team chief only fills
 **Présence Pérols** (week by week); MonthlyRecap and FrankPage are **read-only,
@@ -118,8 +128,9 @@ everywhere without being persisted — pick `AS` (or any code) to override.
   Presence page existed.
 - Tables: `users`, `categories`, `vehicles`, `interventions`,
   `intervention_items`, `presence_drivers`, `presence_weeks`,
-  `presence_entries`, `recap_months`, `recap_entries` (per-driver `days` JSONB +
-  `annotation`, keyed by `month` + `driver_id`), `app_settings` (key/value).
+  `presence_entries`, `planning_entries` (weekly Mon→Sun planning, keyed by
+  `week_start` + `driver_id`), `recap_months`, `recap_entries` (per-driver `days`
+  JSONB + `annotation`, keyed by `month` + `driver_id`), `app_settings` (key/value).
   `vehicles.ct_date` (`YYYY-MM-DD`) stores the next
   technical-inspection date — the CT cycle is **biennial**. `assurance_date`
   (`YYYY-MM-DD`) is the insurance-renewal due date; `statut` is the operating
@@ -145,6 +156,8 @@ everywhere without being persisted — pick `AS` (or any code) to override.
     (503) if `PILOTAGE_SECRET` is unset.
   - `GET/PUT /api/presence/drivers` (PUT = bulk replace of the team)
   - `GET/PUT /api/presence/week/:weekStart` (week grid + responsable)
+  - `GET/PUT /api/planning/week/:weekStart` — weekly planning grid (Mon→Sun,
+    `planning_entries`, no responsable), independent of presence
   - `GET /api/presence/range/:from/:to` — expands the presence weeks overlapping
     the date range into `{ entries: { driverId: { 'YYYY-MM-DD': code } } }`
     (local-date arithmetic mirroring the front's `mondayOf`/`ymd`). Powers the
@@ -175,7 +188,9 @@ The **monthly recap** and **Suivi Frank** tabs do not use `window.print()`: each
 generates a real PDF client-side in one click (`generateRecapPdf` landscape /
 `generateFrankPdf` portrait, `jspdf` + `jspdf-autotable`). Only **Suivi Frank** is
 emailed (`buildFrankEmailHtml` → `POST /api/send-mail` with an explicit `to`, the
-persisted `app_settings.frank_mail_to`); the monthly recap is download-only.
+persisted `app_settings.frank_mail_to`); the monthly recap is download-only. The
+**Planning** tab offers both `doPrint('landscape')` and a one-click PDF
+(`generatePlanningPdf`, landscape, optimised for wall display); it is not emailed.
 
 ### `api/seedData.js`
 
