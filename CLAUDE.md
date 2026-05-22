@@ -43,13 +43,17 @@ sheet, the weekly planning, the monthly recap and the Frank on-call summary).
 
 - **PlanningPage** = the **Planning** tab: a weekly Mon→Sun grid (same
   `presence_drivers` rows) built for wall display / printing. **Independent,
-  editable** data (not derived from presence) with its own six options
+  editable** data (not derived from presence) with its own options
   `PLANNING_OPTIONS` — `P` Présent / `AS` Astreinte / `RJ` Repos jour / `R` Repos
-  / `CP` Congés / `OPS` Opération spéciale (flashy pink `#FF3DA5`). Same weekly
-  `mondayOf`/auto-save (700 ms, `skipSave`) pattern as `PresencePage`, stored in
-  its own `planning_entries` table (`GET/PUT /api/planning/week/:weekStart`, no
+  / `CP` Congés / `F` Férié / `OPS` Opération spéciale (flashy pink `#FF3DA5`).
+  Each day-column header has a **Férié** toggle (`toggleFerie`) that sets/clears
+  `F` for the whole column (everyone) at once. Same weekly `mondayOf`/auto-save
+  (700 ms, `skipSave`) pattern as `PresencePage`, stored in its own
+  `planning_entries` table (`GET/PUT /api/planning/week/:weekStart`, no
   responsable). Actions: **Imprimer** (`doPrint('landscape')`) and **Télécharger
-  PDF** (`generatePlanningPdf`, landscape, large cells + coloured legend chips).
+  PDF** (`generatePlanningPdf`, landscape). Both **always fit on one page**: the
+  PDF sizes rows/font dynamically to the page height (`pageBreak:'avoid'`), and
+  `@media print .planning-area` compacts the on-screen table.
 
 **Single source of truth = the weekly presence sheet.** The team chief only fills
 **Présence Pérols** (week by week); MonthlyRecap and FrankPage are **read-only,

@@ -72,6 +72,7 @@ const PLANNING_OPTIONS = [
   { code: 'RJ', label: 'Repos jour', bg: '#ECEBE3' },
   { code: 'R', label: 'Repos', bg: '#D3D1C7' },
   { code: 'CP', label: 'Congés', bg: '#F9E79F' },
+  { code: 'F', label: 'Férié', bg: '#F2D2A9' },
   { code: 'OPS', label: 'Opération spéciale', bg: '#FF3DA5' },
 ]
 const PLANNING_BG = Object.fromEntries(PLANNING_OPTIONS.map((o) => [o.code, o.bg]))
@@ -463,14 +464,30 @@ function generatePlanningPdf({ weekNum, range, drivers, grid, dayDates, fileName
     return [dr.nom, ...DAY_KEYS.map((k) => PLANNING_LABEL[row[k]] || '')]
   })
 
+  // Dimensionnement dynamique pour TOUJOURS tenir sur une seule page :
+  // on répartit la hauteur disponible entre l'en-tête et les lignes, puis
+  // on adapte la police et les marges des cellules à la hauteur de ligne.
+  const startY = 27
+  const bottomReserve = 16 // place pour la légende + marge basse
+  const pageH = doc.internal.pageSize.getHeight()
+  const rowCount = drivers.length + 1 // + ligne d'en-tête
+  const avail = pageH - startY - bottomReserve
+  const rowH = Math.max(4.5, Math.min(13, avail / rowCount))
+  const fontSize = Math.max(5.5, Math.min(11, rowH * 0.82))
+  const cellPadding = Math.max(0.5, Math.min(2.4, rowH * 0.18))
+
   autoTable(doc, {
-    head: [head], body, startY: 27, margin: { left: 8, right: 8 },
+    head: [head], body, startY, margin: { left: 8, right: 8 },
+    pageBreak: 'avoid', rowPageBreak: 'avoid', tableWidth: 'auto',
     styles: {
-      fontSize: 10, cellPadding: 2.4, halign: 'center', valign: 'middle',
+      fontSize, cellPadding, halign: 'center', valign: 'middle',
       lineColor: [140, 140, 140], lineWidth: 0.2, textColor: [26, 25, 15],
-      minCellHeight: 12, overflow: 'linebreak',
+      minCellHeight: rowH, overflow: 'linebreak',
     },
-    headStyles: { fillColor: [44, 97, 38], textColor: [255, 255, 255], fontSize: 11, halign: 'center' },
+    headStyles: {
+      fillColor: [44, 97, 38], textColor: [255, 255, 255],
+      fontSize: Math.min(11, fontSize + 1), halign: 'center', minCellHeight: rowH,
+    },
     columnStyles: { 0: { halign: 'left', fontStyle: 'bold', cellWidth: 38 } },
     didParseCell: (data) => {
       if (data.section === 'body' && data.column.index > 0) {
@@ -2442,6 +2459,20 @@ function PlanningPage() {
   const setCell = (driverId, dayKey, value) =>
     setGrid((g) => ({ ...g, [driverId]: { ...(g[driverId] || {}), [dayKey]: value } }))
 
+  // Jour férié : applique « F » à tous les dépanneurs pour ce jour
+  // (bascule — re-cliquer efface le férié de la colonne).
+  const dayIsFerie = (dayKey) =>
+    drivers.length > 0 && drivers.every((dr) => (grid[dr.id] || {})[dayKey] === 'F')
+  const toggleFerie = (dayKey) =>
+    setGrid((g) => {
+      const allFerie = drivers.length > 0 && drivers.every((dr) => (g[dr.id] || {})[dayKey] === 'F')
+      const next = { ...g }
+      for (const dr of drivers) {
+        next[dr.id] = { ...(next[dr.id] || {}), [dayKey]: allFerie ? '' : 'F' }
+      }
+      return next
+    })
+
   const downloadPdf = () =>
     generatePlanningPdf({ weekNum, range, drivers, grid, dayDates, fileName: `planning_S${weekNum}_${weekStart}.pdf` })
 
@@ -2467,7 +2498,7 @@ function PlanningPage() {
       </div>
 
       {/* Zone imprimable */}
-      <div className="print-area" style={{
+      <div className="print-area planning-area" style={{
         background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: '22px 24px',
       }}>
         <h1 style={{ fontFamily: FONT_HEAD, fontSize: 24, fontWeight: 700, textTransform: 'uppercase' }}>
@@ -2491,14 +2522,28 @@ function PlanningPage() {
                 <tr>
                   <th style={{ ...thBase, textAlign: 'left', minWidth: 150, fontSize: 13 }}>DÉPANNEUR</th>
                   {DAYS.map((d, i) => {
+                    const k = DAY_KEYS[i]
                     const wknd = i >= 5
+                    const ferie = dayIsFerie(k)
                     return (
                       <th key={d} style={{
                         ...thBase, minWidth: 110, fontSize: 13,
-                        background: wknd ? '#DCDAD0' : '#EDECE4',
+                        background: ferie ? '#F2D2A9' : wknd ? '#DCDAD0' : '#EDECE4',
                       }}>
                         {d}<br />
                         <span style={{ fontWeight: 400, fontSize: 11 }}>{ddmm(dayDates[i])}</span>
+                        <div className="no-print" style={{ marginTop: 4 }}>
+                          <button onClick={() => toggleFerie(k)} disabled={drivers.length === 0}
+                            title="Marquer ce jour férié pour tout le monde"
+                            style={{
+                              border: `1px solid ${ferie ? '#9A6B00' : C.border}`, borderRadius: 6,
+                              padding: '2px 7px', fontSize: 10.5, fontWeight: 700,
+                              background: ferie ? '#F2D2A9' : C.panel,
+                              color: ferie ? '#5A3E00' : C.muted,
+                            }}>
+                            {ferie ? '✓ Férié' : 'Férié'}
+                          </button>
+                        </div>
                       </th>
                     )
                   })}

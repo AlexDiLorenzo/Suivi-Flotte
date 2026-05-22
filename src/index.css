@@ -69,4 +69,15 @@ button:disabled {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
+
+  /* Planning : compacter pour tenir sur une seule page à l'impression */
+  .planning-area h1 { font-size: 18px !important; }
+  .planning-area table { font-size: 10px !important; }
+  .planning-area th,
+  .planning-area td { padding: 2px 3px !important; }
+  .planning-area select {
+    padding: 2px 2px !important;
+    font-size: 10px !important;
+    border: none !important;
+  }
 }
