@@ -467,7 +467,8 @@ function generatePlanningPdf({ weekNum, range, drivers, grid, special, dayDates,
     const row = grid[dr.id] || {}
     return [dr.nom, ...DAY_KEYS.map((k) => PLANNING_LABEL[row[k]] || '')]
   })
-  const body = [specialRow, ...driverRows]
+  const body = [...driverRows, specialRow] // ligne spéciale en dernier
+  const specialIndex = driverRows.length
   const flashy = hexToRgb(SPECIAL_BG)
 
   // Dimensionnement dynamique pour TOUJOURS tenir sur une seule page :
@@ -497,21 +498,19 @@ function generatePlanningPdf({ weekNum, range, drivers, grid, special, dayDates,
     columnStyles: { 0: { halign: 'left', fontStyle: 'bold', cellWidth: 38 } },
     didParseCell: (data) => {
       if (data.section !== 'body') return
-      const isSpecial = data.row.index === 0
-      if (isSpecial) {
-        // Libellé en flashy, cases du jour en flashy si renseignées
+      if (data.row.index === specialIndex) {
+        // Ligne « Opération spéciale » : police réduite (libellés longs),
+        // libellé en flashy, cases du jour en flashy si renseignées.
         data.cell.styles.fontStyle = 'bold'
-        if (data.column.index === 0) {
-          data.cell.styles.fillColor = flashy
-          data.cell.styles.textColor = [255, 255, 255]
-        } else if (data.cell.raw) {
+        data.cell.styles.fontSize = Math.max(5, fontSize - 1.5)
+        if (data.column.index === 0 || data.cell.raw) {
           data.cell.styles.fillColor = flashy
           data.cell.styles.textColor = [255, 255, 255]
         }
         return
       }
       if (data.column.index > 0) {
-        const dr = drivers[data.row.index - 1]
+        const dr = drivers[data.row.index]
         const code = (grid[dr.id] || {})[DAY_KEYS[data.column.index - 1]]
         const rgb = hexToRgb(PLANNING_BG[code])
         if (rgb) data.cell.styles.fillColor = rgb
@@ -2515,7 +2514,6 @@ function PlanningPage() {
           {saveState === 'saving' ? 'Enregistrement…' : 'Enregistré ✓'}
         </span>
         <div style={{ flex: 1 }} />
-        <button style={S.btn} onClick={() => doPrint('landscape')}>🖨 Imprimer</button>
         <button style={{ ...S.btn, ...S.btnPrimary }} disabled={loading} onClick={downloadPdf}>
           ⬇ Télécharger PDF
         </button>
@@ -2574,32 +2572,6 @@ function PlanningPage() {
                 </tr>
               </thead>
               <tbody>
-                {/* Ligne Opération spéciale — texte libre par jour, flashy si rempli */}
-                <tr>
-                  <td style={{
-                    ...tdBase, fontWeight: 800, fontSize: 12, textTransform: 'uppercase',
-                    letterSpacing: 0.4, color: '#fff', background: SPECIAL_BG,
-                  }}>Opération spéciale</td>
-                  {DAY_KEYS.map((k) => {
-                    const v = special[k] || ''
-                    return (
-                      <td key={k} style={{
-                        ...tdBase, padding: 4, textAlign: 'center',
-                        background: v ? SPECIAL_BG : undefined,
-                      }}>
-                        <input value={v} onChange={(e) => setSpecialCell(k, e.target.value)}
-                          placeholder="—"
-                          style={{
-                            width: '100%', padding: '8px 5px', borderRadius: 7, fontSize: 13,
-                            fontWeight: 700, border: `1px solid ${v ? SPECIAL_BG : C.border}`,
-                            textAlign: 'center',
-                            background: v ? SPECIAL_BG : '#fff',
-                            color: v ? '#fff' : C.ink,
-                          }} />
-                      </td>
-                    )
-                  })}
-                </tr>
                 {drivers.map((dr) => (
                   <tr key={dr.id}>
                     <td style={{ ...tdBase, fontWeight: 700, fontSize: 14 }}>{dr.nom}</td>
@@ -2624,6 +2596,33 @@ function PlanningPage() {
                     })}
                   </tr>
                 ))}
+                {/* Dernière ligne — Opération spéciale : texte libre par jour,
+                    flashy si rempli, police réduite pour les libellés longs */}
+                <tr>
+                  <td style={{
+                    ...tdBase, fontWeight: 800, fontSize: 11, textTransform: 'uppercase',
+                    letterSpacing: 0.3, color: '#fff', background: SPECIAL_BG,
+                  }}>Opération spéciale</td>
+                  {DAY_KEYS.map((k) => {
+                    const v = special[k] || ''
+                    return (
+                      <td key={k} style={{
+                        ...tdBase, padding: 4, textAlign: 'center',
+                        background: v ? SPECIAL_BG : undefined,
+                      }}>
+                        <input value={v} onChange={(e) => setSpecialCell(k, e.target.value)}
+                          placeholder="—" title={v}
+                          style={{
+                            width: '100%', padding: '7px 4px', borderRadius: 7, fontSize: 10.5,
+                            fontWeight: 600, border: `1px solid ${v ? SPECIAL_BG : C.border}`,
+                            textAlign: 'center',
+                            background: v ? SPECIAL_BG : '#fff',
+                            color: v ? '#fff' : C.ink,
+                          }} />
+                      </td>
+                    )
+                  })}
+                </tr>
               </tbody>
             </table>
           </div>
@@ -2647,7 +2646,7 @@ function PlanningPage() {
               background: SPECIAL_BG, color: '#fff',
               padding: '5px 12px', borderRadius: 20, fontWeight: 600,
             }}>
-              Opération spéciale (ligne en haut)
+              Opération spéciale (dernière ligne)
             </span>
           </div>
         </div>
