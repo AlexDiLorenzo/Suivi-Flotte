@@ -111,6 +111,30 @@ export async function initDB() {
         PRIMARY KEY (week_start, driver_id)
       );
 
+      -- ── Récapitulatif mensuel ──────────────────────────────
+      -- Réutilise presence_drivers comme base d'employés. Une ligne
+      -- par mois (clé 'AAAA-MM') ; les codes de chaque jour sont
+      -- stockés en JSON ({ "1": "H1", "2": "C", … }) pour gérer un
+      -- nombre de jours variable selon le mois.
+      CREATE TABLE IF NOT EXISTS recap_months (
+        month TEXT PRIMARY KEY,
+        responsable TEXT NOT NULL DEFAULT ''
+      );
+
+      CREATE TABLE IF NOT EXISTS recap_entries (
+        month TEXT NOT NULL,
+        driver_id INT NOT NULL REFERENCES presence_drivers(id) ON DELETE CASCADE,
+        days JSONB NOT NULL DEFAULT '{}'::jsonb,
+        annotation TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (month, driver_id)
+      );
+
+      -- Réglages applicatifs (clé/valeur) — ex. adresse d'envoi du récap
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT ''
+      );
+
       -- Date du prochain contrôle technique (remplace le planning mois/jour)
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS ct_date TEXT NOT NULL DEFAULT '';
       -- Échéance d'assurance et statut d'exploitation du véhicule

@@ -86,6 +86,8 @@ app.use("/api/categories", auth);
 app.use("/api/vehicles", auth);
 app.use("/api/interventions", auth);
 app.use("/api/presence", auth);
+app.use("/api/recap", auth);
+app.use("/api/recap-config", auth);
 app.use("/api/send-mail", auth);
 app.use("/api/stats", auth);
 
@@ -384,12 +386,81 @@ app.put("/api/presence/week/:weekStart", wrap(async (req, res) => {
   }
 }));
 
+// ── Récapitulatif mensuel ───────────────────────────────────
+// Réutilise presence_drivers comme base d'employés. Les codes de
+// chaque jour sont stockés en JSON par employé et par mois.
+app.get("/api/recap/:month", wrap(async (req, res) => {
+  const month = req.params.month;
+  const { rows: meta } = await pool.query(
+    "SELECT responsable FROM recap_months WHERE month=$1", [month]
+  );
+  const { rows: entries } = await pool.query(
+    "SELECT * FROM recap_entries WHERE month=$1", [month]
+  );
+  const map = {};
+  for (const e of entries) {
+    map[e.driver_id] = { days: e.days || {}, annotation: e.annotation || "" };
+  }
+  res.json({ responsable: meta[0]?.responsable || "", entries: map });
+}));
+
+app.put("/api/recap/:month", wrap(async (req, res) => {
+  const month = req.params.month;
+  const { responsable, entries } = req.body;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO recap_months (month, responsable) VALUES ($1,$2)
+       ON CONFLICT (month) DO UPDATE SET responsable=$2`,
+      [month, responsable || ""]
+    );
+    await client.query("DELETE FROM recap_entries WHERE month=$1", [month]);
+    for (const [driverId, e] of Object.entries(entries || {})) {
+      await client.query(
+        `INSERT INTO recap_entries (month, driver_id, days, annotation)
+         VALUES ($1,$2,$3,$4)`,
+        [month, Number(driverId), JSON.stringify(e?.days || {}), e?.annotation || ""]
+      );
+    }
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+// Adresse d'envoi prédéfinie du récapitulatif (réglage global)
+app.get("/api/recap-config", wrap(async (_req, res) => {
+  const { rows } = await pool.query(
+    "SELECT value FROM app_settings WHERE key='recap_mail_to'"
+  );
+  res.json({ mailTo: rows[0]?.value || "" });
+}));
+
+app.put("/api/recap-config", wrap(async (req, res) => {
+  const mailTo = (req.body?.mailTo || "").trim();
+  await pool.query(
+    `INSERT INTO app_settings (key, value) VALUES ('recap_mail_to', $1)
+     ON CONFLICT (key) DO UPDATE SET value=$1`,
+    [mailTo]
+  );
+  res.json({ mailTo });
+}));
+
 // ── Envoi d'un tableau par email (Resend) ───────────────────
 app.post("/api/send-mail", wrap(async (req, res) => {
-  const { subject, html } = req.body;
+  const { subject, html, to: toOverride } = req.body;
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.RESEND_FROM;
-  const to = process.env.MAIL_TO || "compta@montpellierdepannage.com";
+  // Adresse cible : celle fournie par le client (ex. récap mensuel) si
+  // valide, sinon la valeur serveur (compta) par défaut.
+  const override = String(toOverride || "").trim();
+  const validEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(override);
+  const to = validEmail ? override : (process.env.MAIL_TO || "compta@montpellierdepannage.com");
   if (!apiKey || !from) {
     return res.status(503).json({
       error: "Envoi d'email non configuré sur le serveur (RESEND_API_KEY / RESEND_FROM manquants).",

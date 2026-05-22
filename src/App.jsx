@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext } from 'react'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 /* ════════════════════════════════════════════════════════════
    Constantes & thème — Design System Montpellier Dépannage
@@ -25,6 +27,24 @@ const FONT_MONO = "'JetBrains Mono', monospace"
 
 const MONTHS_SHORT = ['JAN', 'FÉV', 'MARS', 'AVR', 'MAI', 'JUIN',
   'JUIL', 'AOÛT', 'SEP', 'OCT', 'NOV', 'DÉC']
+
+const MONTHS_FULL = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+  'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre']
+
+// Lettre du jour de semaine, indexée par Date.getDay() (0 = dimanche)
+const WEEKDAY_LETTERS = ['D', 'L', 'M', 'M', 'J', 'V', 'S']
+
+// Codes du récapitulatif mensuel (légende du planning_mars_2026.csv).
+// Astreinte / WE travaillés = tons rouge-orangé (rouges sur l'original).
+const RECAP_CODES = [
+  { code: 'H1', meaning: 'Horaire de base (8h-17h, 2h de pause)', bg: '#C6E0B4' },
+  { code: 'A', meaning: 'Astreinte', bg: '#E59A9A' },
+  { code: 'WE', meaning: 'Weekend travaillé', bg: '#F2D2A9' },
+  { code: 'C', meaning: 'Congés', bg: '#F9E79F' },
+  { code: 'r', meaning: 'Repos', bg: '#D3D1C7' },
+  { code: 'rj', meaning: 'Repos journalier', bg: '#ECEBE3' },
+]
+const RECAP_BG = Object.fromEntries(RECAP_CODES.map((c) => [c.code, c.bg]))
 
 const ITEM_TYPES = ['Filtre à air', 'Filtre à huile', 'Filtre à gasoil',
   'Freins AV', 'Freins AR', 'Passage aux mines', 'Vidange', 'Pneumatiques', 'Autre']
@@ -216,8 +236,127 @@ function buildPresenceEmailHtml({ weekNum, range, responsable, drivers, grid, da
   </div>`
 }
 
-async function sendMail(subject, html) {
-  return apiFetch('/send-mail', { method: 'POST', body: JSON.stringify({ subject, html }) })
+async function sendMail(subject, html, to) {
+  return apiFetch('/send-mail', {
+    method: 'POST',
+    body: JSON.stringify({ subject, html, ...(to ? { to } : {}) }),
+  })
+}
+
+/* Dates — mois calendaire */
+function firstOfMonth(d) {
+  const x = new Date(d)
+  x.setDate(1)
+  x.setHours(12, 0, 0, 0)
+  return x
+}
+function addMonths(d, n) {
+  const x = new Date(d)
+  x.setDate(1)
+  x.setMonth(x.getMonth() + n)
+  return x
+}
+/* Clé de mois 'AAAA-MM' */
+function ym(d) {
+  const x = new Date(d)
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}`
+}
+/* Nombre de jours d'un mois (month = 1-12) */
+function daysInMonth(year, month) {
+  return new Date(year, month, 0).getDate()
+}
+
+/* Couleur hexadécimale → [r, g, b] pour jsPDF */
+function hexToRgb(hex) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(String(hex || ''))
+  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null
+}
+
+/* HTML email — récapitulatif mensuel */
+function buildRecapEmailHtml({ monthLabel, responsable, drivers, grid, days, year, month }) {
+  const th = 'padding:4px 5px;border:1px solid #999;background:#2C6126;color:#fff;font-size:10px'
+  const td = 'padding:4px 5px;border:1px solid #bbb;font-size:10px'
+  const wd = (d) => new Date(year, month - 1, d).getDay()
+  const wknd = (d) => wd(d) === 0 || wd(d) === 6
+  const head = `<tr><th style="${th};text-align:left">NOM</th>` +
+    days.map((d) =>
+      `<th style="${th}${wknd(d) ? ';background:#1F451B' : ''}">${WEEKDAY_LETTERS[wd(d)]}<br><span style="font-weight:400">${d}</span></th>`
+    ).join('') +
+    `<th style="${th};text-align:left">Annotation</th></tr>`
+  const body = drivers.map((dr) => {
+    const e = grid[dr.id] || {}
+    const dd = e.days || {}
+    return `<tr><td style="${td};font-weight:600;white-space:nowrap">${esc(dr.nom)}</td>` +
+      days.map((d) => {
+        const v = dd[d] || ''
+        const bg = RECAP_BG[v] || (wknd(d) ? '#F4F3EE' : '#fff')
+        return `<td style="${td};text-align:center;background:${bg}">${esc(v)}</td>`
+      }).join('') +
+      `<td style="${td}">${esc(e.annotation || '')}</td></tr>`
+  }).join('')
+  const legend = RECAP_CODES.map((c) =>
+    `<span style="display:inline-block;margin:2px 8px 2px 0"><b>${c.code}</b> = ${c.meaning}</span>`).join('')
+  return `<div style="font-family:Arial,sans-serif;color:#1A190F">
+    <h2 style="margin:0 0 4px">Récapitulatif mensuel — ${esc(monthLabel)}</h2>
+    <p style="margin:0 0 12px">Responsable : <b>${esc(responsable) || '—'}</b></p>
+    <table style="border-collapse:collapse">${head}${body}</table>
+    <p style="margin:14px 0 0;font-size:11px;color:#555">${legend}</p>
+  </div>`
+}
+
+/* Génération PDF (un clic) — récapitulatif mensuel, format paysage */
+function generateRecapPdf({ monthLabel, responsable, drivers, grid, days, year, month, fileName }) {
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+  const wd = (d) => new Date(year, month - 1, d).getDay()
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13)
+  doc.text(`RÉCAPITULATIF MENSUEL — ${monthLabel.toUpperCase()}`, 8, 12)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9)
+  doc.text(`Montpellier Dépannage · Responsable : ${responsable || '—'}`, 8, 18)
+
+  const head = ['NOM', ...days.map((d) => `${WEEKDAY_LETTERS[wd(d)]}\n${d}`), 'Annotation']
+  const body = drivers.map((dr) => {
+    const e = grid[dr.id] || {}
+    const dd = e.days || {}
+    return [dr.nom, ...days.map((d) => dd[d] || ''), e.annotation || '']
+  })
+
+  autoTable(doc, {
+    head: [head], body, startY: 22, margin: { left: 8, right: 8 },
+    tableWidth: 'auto',
+    styles: {
+      fontSize: 6, cellPadding: 0.8, halign: 'center', valign: 'middle',
+      lineColor: [180, 180, 180], lineWidth: 0.1, textColor: [26, 25, 15], overflow: 'linebreak',
+    },
+    headStyles: { fillColor: [44, 97, 38], textColor: [255, 255, 255], fontSize: 6, halign: 'center' },
+    columnStyles: {
+      0: { halign: 'left', cellWidth: 22, fontStyle: 'bold' },
+      [days.length + 1]: { halign: 'left', cellWidth: 30 },
+    },
+    didParseCell: (data) => {
+      const col = data.column.index
+      const isDayCol = col > 0 && col <= days.length
+      if (data.section === 'head' && isDayCol) {
+        const w = wd(days[col - 1])
+        if (w === 0 || w === 6) data.cell.styles.fillColor = [31, 69, 27]
+      }
+      if (data.section === 'body' && isDayCol) {
+        const rgb = hexToRgb(RECAP_BG[data.cell.raw])
+        if (rgb) data.cell.styles.fillColor = rgb
+        else if ([0, 6].includes(wd(days[col - 1]))) data.cell.styles.fillColor = [244, 243, 238]
+      }
+    },
+  })
+
+  let y = doc.lastAutoTable.finalY + 6
+  doc.setFontSize(8); doc.setFont('helvetica', 'bold')
+  doc.text('Légende', 8, y)
+  doc.setFont('helvetica', 'normal')
+  doc.text(
+    RECAP_CODES.map((c) => `${c.code} = ${c.meaning}`).join('   ·   '),
+    8, y + 5, { maxWidth: 281 }
+  )
+  doc.save(fileName)
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -447,13 +586,20 @@ function FlotteApp({ user, onLogout, onUserChange }) {
   const goDashboard = () => setView({ name: 'dashboard' })
   const goPresence = () => setView({ name: 'presence' })
   const goStats = () => setView({ name: 'stats' })
-  const active = ['presence', 'stats'].includes(view.name) ? view.name : 'dashboard'
+  const goRecap = () => setView({ name: 'recap' })
+  const active = ['presence', 'stats', 'recap'].includes(view.name) ? view.name : 'dashboard'
+
+  const onNav = (n) =>
+    n === 'presence' ? goPresence()
+      : n === 'stats' ? goStats()
+        : n === 'recap' ? goRecap()
+          : goDashboard()
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       <TopBar
         user={user} onLogout={onLogout} onUserChange={onUserChange} active={active}
-        onNav={(n) => (n === 'presence' ? goPresence() : n === 'stats' ? goStats() : goDashboard())}
+        onNav={onNav}
       />
       <div style={{ flex: 1, padding: '24px clamp(14px, 3vw, 36px) 60px' }}>
         {loading ? (
@@ -472,6 +618,8 @@ function FlotteApp({ user, onLogout, onUserChange }) {
           />
         ) : view.name === 'stats' ? (
           <StatsPage categories={categories} vehicles={vehicles} />
+        ) : view.name === 'recap' ? (
+          <MonthlyRecap />
         ) : (
           <PresencePage />
         )}
@@ -511,6 +659,7 @@ function TopBar({ user, onLogout, onUserChange, active, onNav }) {
         {navBtn('dashboard', 'Tableau de bord')}
         {navBtn('stats', 'Indicateurs')}
         {navBtn('presence', 'Présence Pérols')}
+        {navBtn('recap', 'Récapitulatif mensuel')}
       </nav>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
         <span style={{ fontSize: 13.5, color: C.muted }}>
@@ -1690,6 +1839,293 @@ function TeamModal({ drivers, onClose, onSaved }) {
         </div>
       </div>
     </Modal>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════
+   Récapitulatif mensuel — planning du mois (base presence_drivers)
+   ════════════════════════════════════════════════════════════ */
+function MonthlyRecap() {
+  const notify = useToast()
+  const [anchor, setAnchor] = useState(() => firstOfMonth(new Date()))
+  const monthKey = ym(anchor)
+  const year = anchor.getFullYear()
+  const month = anchor.getMonth() + 1
+  const nDays = daysInMonth(year, month)
+  const days = useMemo(() => Array.from({ length: nDays }, (_, i) => i + 1), [nDays])
+  const monthLabel = `${MONTHS_FULL[month - 1]} ${year}`
+  const wd = useCallback((d) => new Date(year, month - 1, d).getDay(), [year, month])
+  const isWknd = (d) => wd(d) === 0 || wd(d) === 6
+
+  const [drivers, setDrivers] = useState([])
+  const [responsable, setResponsable] = useState('')
+  const [grid, setGrid] = useState({}) // { driverId: { days: {dayNum: code}, annotation } }
+  const [mailTo, setMailTo] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [teamModal, setTeamModal] = useState(false)
+  const [saveState, setSaveState] = useState('saved') // 'saving' | 'saved'
+  const [sendConfirm, setSendConfirm] = useState(false)
+  const [sending, setSending] = useState(false)
+  const skipSave = useRef(true)
+
+  // Chargement du mois (+ équipe partagée et adresse d'envoi)
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+    skipSave.current = true
+    Promise.all([
+      apiFetch('/presence/drivers'),
+      apiFetch('/recap/' + monthKey),
+      apiFetch('/recap-config'),
+    ])
+      .then(([drv, rec, cfg]) => {
+        if (!alive) return
+        setDrivers(drv)
+        setResponsable(rec.responsable || '')
+        setGrid(rec.entries || {})
+        setMailTo(cfg.mailTo || '')
+      })
+      .catch((err) => { if (alive) notify(err.message, 'error') })
+      .finally(() => {
+        if (!alive) return
+        setLoading(false)
+        setSaveState('saved')
+        setTimeout(() => { skipSave.current = false }, 0)
+      })
+    return () => { alive = false }
+  }, [monthKey, notify])
+
+  // Enregistrement automatique (anti-rebond 700 ms)
+  useEffect(() => {
+    if (skipSave.current || loading) return
+    setSaveState('saving')
+    const t = setTimeout(async () => {
+      try {
+        const entries = {}
+        for (const d of drivers) entries[d.id] = grid[d.id] || { days: {}, annotation: '' }
+        await apiFetch('/recap/' + monthKey, {
+          method: 'PUT',
+          body: JSON.stringify({ responsable, entries }),
+        })
+        setSaveState('saved')
+      } catch (err) {
+        notify(err.message, 'error')
+      }
+    }, 700)
+    return () => clearTimeout(t)
+  }, [responsable, grid, drivers, monthKey, loading, notify])
+
+  const setCell = (driverId, day, value) =>
+    setGrid((g) => {
+      const cur = g[driverId] || { days: {}, annotation: '' }
+      return { ...g, [driverId]: { ...cur, days: { ...cur.days, [day]: value } } }
+    })
+  const setAnnotation = (driverId, value) =>
+    setGrid((g) => {
+      const cur = g[driverId] || { days: {}, annotation: '' }
+      return { ...g, [driverId]: { ...cur, annotation: value } }
+    })
+
+  const saveMailTo = async () => {
+    try {
+      const d = await apiFetch('/recap-config', {
+        method: 'PUT', body: JSON.stringify({ mailTo: mailTo.trim() }),
+      })
+      setMailTo(d.mailTo)
+    } catch (err) { notify(err.message, 'error') }
+  }
+
+  const downloadPdf = () =>
+    generateRecapPdf({
+      monthLabel, responsable, drivers, grid, days, year, month,
+      fileName: `recap_${monthKey}.pdf`,
+    })
+
+  const send = async () => {
+    const dest = mailTo.trim()
+    if (!dest) { notify('Renseignez d\'abord l\'adresse de destination', 'error'); return }
+    setSending(true)
+    try {
+      await sendMail(
+        `Récapitulatif mensuel — ${monthLabel}`,
+        buildRecapEmailHtml({ monthLabel, responsable, drivers, grid, days, year, month }),
+        dest
+      )
+      notify(`Récapitulatif envoyé à ${dest}`, 'success')
+    } catch (err) {
+      notify(err.message, 'error')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div style={{ maxWidth: 1320, margin: '0 auto' }}>
+      {/* Barre d'outils */}
+      <div className="no-print" style={{
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16,
+      }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button style={S.btn} onClick={() => setAnchor((a) => addMonths(a, -1))}>◀</button>
+          <button style={S.btn} onClick={() => setAnchor(firstOfMonth(new Date()))}>Ce mois</button>
+          <button style={S.btn} onClick={() => setAnchor((a) => addMonths(a, 1))}>▶</button>
+        </div>
+        <span style={{ fontSize: 13, color: C.muted }}>
+          {saveState === 'saving' ? 'Enregistrement…' : 'Enregistré ✓'}
+        </span>
+        <div style={{ flex: 1 }} />
+        <button style={S.btn} onClick={() => setTeamModal(true)}>👥 Gérer l'équipe</button>
+        <button style={S.btn} disabled={loading} onClick={downloadPdf}>⬇ Télécharger PDF</button>
+        <button style={{ ...S.btn, ...S.btnPrimary }} disabled={sending || loading}
+          onClick={() => setSendConfirm(true)}>
+          {sending ? 'Envoi…' : '✉ Envoyer le récapitulatif'}
+        </button>
+      </div>
+
+      {/* Adresse de destination prédéfinie */}
+      <div className="no-print" style={{
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16,
+        background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: '11px 14px',
+      }}>
+        <label style={{ ...S.label, marginBottom: 0 }}>Adresse d'envoi du récapitulatif</label>
+        <input type="email" value={mailTo} onChange={(e) => setMailTo(e.target.value)}
+          onBlur={saveMailTo} placeholder="destinataire@exemple.com"
+          style={{ ...S.input, maxWidth: 320, fontFamily: FONT_MONO }} />
+        <span style={{ fontSize: 12, color: C.muted }}>
+          Mémorisée pour tous les mois · le bouton « Envoyer » l'utilise comme destinataire.
+        </span>
+      </div>
+
+      {/* Zone du tableau */}
+      <div style={{
+        background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: '22px 24px',
+      }}>
+        <h1 style={{ fontFamily: FONT_HEAD, fontSize: 22, fontWeight: 700, textTransform: 'uppercase' }}>
+          Récapitulatif mensuel — {monthLabel}
+        </h1>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '16px 0 14px', flexWrap: 'wrap' }}>
+          <label style={{ ...S.label, marginBottom: 0 }}>Nom du responsable</label>
+          <input value={responsable} onChange={(e) => setResponsable(e.target.value)}
+            placeholder="Responsable d'équipe" style={{ ...S.input, maxWidth: 260 }} />
+          <span style={{ fontSize: 13, color: C.muted }}>Signature : ______________________</span>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>Chargement…</div>
+        ) : drivers.length === 0 ? (
+          <div style={{
+            padding: 36, textAlign: 'center', color: C.muted,
+            border: `1px dashed ${C.border}`, borderRadius: 10,
+          }}>
+            Aucun employé. Cliquez sur « Gérer l'équipe » pour renseigner la liste.
+          </div>
+        ) : (
+          <div className="tablewrap" style={{ overflowX: 'auto' }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th style={{
+                    ...thBase, textAlign: 'left', minWidth: 130, position: 'sticky', left: 0, zIndex: 3,
+                  }}>NOM</th>
+                  {days.map((d) => (
+                    <th key={d} style={{
+                      ...thBase, minWidth: 30, padding: '6px 2px',
+                      background: isWknd(d) ? '#DCDAD0' : '#EDECE4',
+                    }}>
+                      <div style={{ fontSize: 9.5, color: C.muted }}>{WEEKDAY_LETTERS[wd(d)]}</div>
+                      {d}
+                    </th>
+                  ))}
+                  <th style={{ ...thBase, textAlign: 'left', minWidth: 130 }}>Annotation</th>
+                </tr>
+              </thead>
+              <tbody>
+                {drivers.map((dr) => {
+                  const e = grid[dr.id] || {}
+                  const dd = e.days || {}
+                  return (
+                    <tr key={dr.id}>
+                      <td style={{
+                        ...tdBase, fontWeight: 600, position: 'sticky', left: 0, zIndex: 1,
+                        background: C.panel,
+                      }}>{dr.nom}</td>
+                      {days.map((d) => {
+                        const v = dd[d] || ''
+                        return (
+                          <td key={d} style={{
+                            ...tdBase, padding: 2, textAlign: 'center',
+                            background: v ? undefined : (isWknd(d) ? '#F4F3EE' : undefined),
+                          }}>
+                            <select value={v} onChange={(ev) => setCell(dr.id, d, ev.target.value)}
+                              style={{
+                                width: '100%', padding: '5px 1px', borderRadius: 5, fontSize: 11.5,
+                                fontWeight: 600, border: `1px solid ${C.border}`,
+                                textAlign: 'center', textAlignLast: 'center',
+                                background: RECAP_BG[v] || (isWknd(d) ? '#F4F3EE' : '#fff'), color: C.ink,
+                              }}>
+                              <option value="">—</option>
+                              {RECAP_CODES.map((c) => (
+                                <option key={c.code} value={c.code}>{c.code}</option>
+                              ))}
+                            </select>
+                          </td>
+                        )
+                      })}
+                      <td style={{ ...tdBase, padding: 3 }}>
+                        <input value={e.annotation || ''}
+                          onChange={(ev) => setAnnotation(dr.id, ev.target.value)}
+                          style={{ ...inSm, fontSize: 12 }} />
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Légende */}
+        <div style={{ marginTop: 16 }}>
+          <div style={S.label}>Légende</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {RECAP_CODES.map((c) => (
+              <span key={c.code} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12,
+                background: c.bg, padding: '3px 9px', borderRadius: 20,
+              }}>
+                <strong>{c.code}</strong> {c.meaning}
+              </span>
+            ))}
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12,
+              background: '#F4F3EE', padding: '3px 9px', borderRadius: 20, color: C.muted,
+            }}>weekend</span>
+          </div>
+        </div>
+      </div>
+
+      {teamModal && (
+        <TeamModal drivers={drivers} onClose={() => setTeamModal(false)}
+          onSaved={(newList) => {
+            setTeamModal(false)
+            setDrivers(newList)
+            setGrid((g) => {
+              const ids = new Set(newList.map((d) => String(d.id)))
+              const next = {}
+              for (const k of Object.keys(g)) if (ids.has(String(k))) next[k] = g[k]
+              return next
+            })
+            notify('Équipe mise à jour', 'success')
+          }} />
+      )}
+      {sendConfirm && (
+        <ConfirmDialog
+          message={`Envoyer le récapitulatif de ${monthLabel} à ${mailTo.trim() || '(aucune adresse renseignée)'} ?`}
+          confirmLabel="Envoyer" onConfirm={send} onClose={() => setSendConfirm(false)}
+        />
+      )}
+    </div>
   )
 }
 

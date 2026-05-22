@@ -34,11 +34,24 @@ No test runner or linter is configured.
 
 All logic and components are inline in `App.jsx`: `LoginScreen`, `FlotteApp`,
 `TopBar`, `Dashboard`, `VehicleModal`, `CategoryModal`, `VehicleDetail`,
-`InterventionModal`, `StatsPage`, `PresencePage`, `TeamModal`, `Modal`,
-`ConfirmDialog`, `ToastHost`. No router, no state library. Navigation is a
-`view` state object with four views: `dashboard`, `vehicle`, `stats`,
-`presence` (the `TopBar` nav switches between the fleet dashboard, the
-indicators page and the Pérols presence sheet).
+`InterventionModal`, `StatsPage`, `PresencePage`, `MonthlyRecap`, `TeamModal`,
+`Modal`, `ConfirmDialog`, `ToastHost`. No router, no state library. Navigation
+is a `view` state object with five views: `dashboard`, `vehicle`, `stats`,
+`presence`, `recap` (the `TopBar` nav switches between the fleet dashboard, the
+indicators page, the Pérols presence sheet and the monthly recap).
+
+- **MonthlyRecap** = the monthly recap tab (`récapitulatif mensuel`), modelled
+  on `PresencePage` and reproducing `planning_mars_2026.csv`. Rows = the **same**
+  `presence_drivers` team (managed by the shared `TeamModal`); columns = every
+  calendar day of the month (weekday letter + number, weekends tinted) plus a
+  free-text `Annotation` column. Codes are `RECAP_CODES` (`H1`/`A`/`WE`/`C`/`r`/
+  `rj`). Month navigation by a first-of-month anchor (`firstOfMonth`/`addMonths`/
+  `ym`); the grid auto-saves (debounced 700 ms, same `skipSave` pattern as
+  presence). Two actions: **Télécharger PDF** (one-click, `generateRecapPdf` via
+  `jspdf` + `jspdf-autotable`, landscape A4 with code-coloured cells) and
+  **Envoyer le récapitulatif** (`buildRecapEmailHtml` → `POST /api/send-mail`
+  with an explicit `to`). The destination address is a persisted global setting
+  (`app_settings.recap_mail_to`), edited inline and saved on blur.
 
 - **StatsPage** = the read-only indicators tab. It fetches `GET /api/stats`
   (per-intervention cost rows + cost-by-part-type) and crosses it with the
@@ -79,7 +92,9 @@ indicators page and the Pérols presence sheet).
   Presence page existed.
 - Tables: `users`, `categories`, `vehicles`, `interventions`,
   `intervention_items`, `presence_drivers`, `presence_weeks`,
-  `presence_entries`. `vehicles.ct_date` (`YYYY-MM-DD`) stores the next
+  `presence_entries`, `recap_months`, `recap_entries` (per-driver `days` JSONB +
+  `annotation`, keyed by `month` + `driver_id`), `app_settings` (key/value).
+  `vehicles.ct_date` (`YYYY-MM-DD`) stores the next
   technical-inspection date — the CT cycle is **biennial**. `assurance_date`
   (`YYYY-MM-DD`) is the insurance-renewal due date; `statut` is the operating
   status (`Actif` / `Stocké` / `En cession` / `Hors service`, empty = unset).
@@ -104,18 +119,28 @@ indicators page and the Pérols presence sheet).
     (503) if `PILOTAGE_SECRET` is unset.
   - `GET/PUT /api/presence/drivers` (PUT = bulk replace of the team)
   - `GET/PUT /api/presence/week/:weekStart` (week grid + responsable)
-  - `POST /api/send-mail` — emails an HTML table to `MAIL_TO`
-    (default `compta@montpellierdepannage.com`) via Resend
+  - `GET/PUT /api/recap/:month` — monthly recap (`AAAA-MM`): responsable +
+    per-driver `{ days: {dayNum: code}, annotation }`, keyed by `presence_drivers`
+  - `GET/PUT /api/recap-config` — persisted recap destination email
+    (`app_settings.recap_mail_to`)
+  - `POST /api/send-mail` — emails an HTML table via Resend. Sends to the
+    optional `to` field if it is a valid address (used by the monthly recap),
+    otherwise to `MAIL_TO` (default `compta@montpellierdepannage.com`)
 
 ### Print & email
 
 Both tables (fleet dashboard, presence sheet) have a print button (`doPrint()`
 sets `@page` orientation, then `window.print()`; `.no-print` / `.print-area` /
-`.tablewrap` rules in `index.css`). Only the **presence sheet** has a "send to
+`.tablewrap` rules in `index.css`). The **presence sheet** has a "send to
 compta" button — the email HTML is built client-side (`buildPresenceEmailHtml`)
 and posted to `POST /api/send-mail`, which relays it through Resend. If
 `RESEND_API_KEY` / `RESEND_FROM` are unset the endpoint returns 503 and printing
 still works.
+
+The **monthly recap** does not use `window.print()`: it generates a real PDF
+client-side in one click (`generateRecapPdf`, `jspdf` + `jspdf-autotable`) and
+emails via the same `POST /api/send-mail` but with an explicit `to` address (the
+persisted `app_settings.recap_mail_to`), not the compta default.
 
 ### `api/seedData.js`
 
