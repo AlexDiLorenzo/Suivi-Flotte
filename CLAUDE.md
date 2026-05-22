@@ -41,32 +41,38 @@ Navigation is a `view` state object with six views: `dashboard`, `vehicle`,
 fleet dashboard, the indicators page, the Pérols presence sheet, the monthly
 recap and the Frank on-call summary).
 
-- **MonthlyRecap** = the monthly recap tab (`récapitulatif mensuel`), modelled
-  on `PresencePage` and reproducing `planning_mars_2026.csv`. Rows = the **same**
+**Single source of truth = the weekly presence sheet.** The team chief only fills
+**Présence Pérols** (week by week); MonthlyRecap and FrankPage are **read-only,
+derived** from it. Weekend cells (Sat/Sun) default to the `WE` code
+(`effectiveCode` / `WEEKEND_DEFAULT`): an empty weekend cell is treated as `WE`
+everywhere without being persisted — pick `AS` (or any code) to override.
+`PresencePage` shows that default in its `<select>`.
+
+- **MonthlyRecap** = the monthly recap tab (`récapitulatif mensuel`). Rows = the
   `presence_drivers` team. The period runs **from the 25th of the previous month
-  to the 25th of the displayed month** (`recapPeriod`), so it straddles two months
-  — cells are therefore keyed by full **ISO date**
-  (`grid[driverId].days['YYYY-MM-DD']`), not day-of-month. Columns = one per day
-  (weekday letter + day number, weekends tinted) plus a free-text `Annotation`
-  column. Codes are `RECAP_CODES` (`H1`/`A`/`WE`/`C`/`r`/`rj`). Month navigation by
-  a first-of-month anchor (`firstOfMonth`/`addMonths`/`ym`); the monthKey
-  (`AAAA-MM`) is the **end** month. The grid auto-saves (debounced 700 ms, same
-  `skipSave` pattern as presence). This tab is the **data-entry surface** and is
-  **not emailed** — its only action is **Télécharger PDF** (`generateRecapPdf`,
-  `jspdf` + `jspdf-autotable`, landscape, for the user's own use). FrankPage is
-  the derived, sendable view. **Team editing lives only in Présence Pérols** (the
-  shared `TeamModal` writes `presence_drivers`); recap and Frank merely read it.
+  to the 25th of the displayed month** (`recapPeriod`), straddling two months.
+  It **reconstructs each day's code from the presence weeks** via
+  `GET /api/presence/range/:from/:to` (which expands stored weeks into a
+  `{driverId: {'YYYY-MM-DD': code}}` map) — the day cells are **read-only** and use
+  the **Présence Pérols codes** (`PRESENCE_CODES`, incl. `WE`), not a separate
+  code set. The **only editable field is the per-driver `Annotation`** (+ the
+  responsable), persisted in `recap_entries.annotation` (auto-save, 700 ms debounce;
+  `recap_entries.days` is no longer written). monthKey (`AAAA-MM`) is the **end**
+  month. Not emailed — only **Télécharger PDF** (`generateRecapPdf`, landscape).
+  **Team editing lives only in Présence Pérols** (shared `TeamModal`).
 
 - **FrankPage** = the **Suivi Frank** tab (`recap_astreintes_mars_2026.csv`), a
-  read-only **derived** view: it re-reads the recap grid for the same 25→25
-  period and aggregates each driver's coded days into date ranges
-  (`buildFrankRows` + `summarizeRuns`: consecutive days → "du JJ/MM au JJ/MM",
-  isolated → "le JJ/MM"). Code→column map (`CODE_TO_COLUMN`): `A`→astreintes,
-  `rj`→repos journalier, `r`→repos, `C`→congés; the recap `Annotation` becomes
-  *Informations supplémentaires*. **This is the table meant to be sent**: a
-  **Envoyer à Frank** button (`buildFrankEmailHtml` → `POST /api/send-mail` with
-  an explicit `to`) and a one-click PDF (`generateFrankPdf`, portrait). Frank's
-  address is its own persisted setting (`app_settings.frank_mail_to`).
+  read-only **derived** view over the same 25→25 period. It reads the presence
+  range + the recap annotations, then aggregates each driver's coded days into
+  date ranges (`buildFrankRows` + `summarizeRuns`: consecutive → "du JJ/MM au
+  JJ/MM", isolated → "le JJ/MM"). Code→column mapping is **token-based**
+  (`frankColumnsForCode`, split on `/`): a token `AS`→astreintes, `RJ`→repos
+  journalier, `R`→repos, `CP`→congés — so a combined code like `AS/CP` lands in
+  **both** columns. The recap `Annotation` becomes *Informations supplémentaires*.
+  **This is the table meant to be sent**: **Envoyer à Frank**
+  (`buildFrankEmailHtml` → `POST /api/send-mail` with explicit `to`) + one-click
+  PDF (`generateFrankPdf`, portrait). Frank's address is its own persisted setting
+  (`app_settings.frank_mail_to`).
 
 - **StatsPage** = the read-only indicators tab. It fetches `GET /api/stats`
   (per-intervention cost rows + cost-by-part-type) and crosses it with the
@@ -90,11 +96,16 @@ recap and the Frank on-call summary).
   cell (`CtCell`) shows the next inspection date + a coloured `J-xx` countdown
   pill (`ctTone`: red ≤30 j or overdue, orange ≤90 j, green beyond). Rows are
   sorted within each category by CT date (`ctSort`, soonest first).
-- **PresencePage** = the Pérols weekly presence sheet. A week is identified by
-  its Monday (`mondayOf` / `ymd`); the grid is `{driverId: {lun…dim}}`. It
-  **auto-saves** (debounced 700 ms) — a `skipSave` ref blocks saves during the
-  initial load and on week switches. The autosave payload is rebuilt from the
-  current `drivers` list, so entries for deleted drivers never reach the API.
+- **PresencePage** = the Pérols weekly presence sheet — the **single data-entry
+  surface** the team chief fills (recap + Frank derive from it). A week is
+  identified by its Monday (`mondayOf` / `ymd`); the grid is `{driverId:
+  {lun…dim}}`. Codes are `PRESENCE_CODES` (`P`, `AS`, `RJ`, `R`, `CP`, …, plus
+  `WE` = week-end). **Weekend cells default to `WE`** via `effectiveCode` (an
+  empty Sat/Sun is shown and treated as `WE` without being persisted; override
+  with `AS` etc.). It **auto-saves** (debounced 700 ms) — a `skipSave` ref blocks
+  saves during the initial load and on week switches. The autosave payload is
+  rebuilt from the current `drivers` list, so entries for deleted drivers never
+  reach the API.
 
 ### Backend (`api/`)
 
@@ -134,9 +145,13 @@ recap and the Frank on-call summary).
     (503) if `PILOTAGE_SECRET` is unset.
   - `GET/PUT /api/presence/drivers` (PUT = bulk replace of the team)
   - `GET/PUT /api/presence/week/:weekStart` (week grid + responsable)
+  - `GET /api/presence/range/:from/:to` — expands the presence weeks overlapping
+    the date range into `{ entries: { driverId: { 'YYYY-MM-DD': code } } }`
+    (local-date arithmetic mirroring the front's `mondayOf`/`ymd`). Powers the
+    derived MonthlyRecap and FrankPage views
   - `GET/PUT /api/recap/:month` — monthly recap (`AAAA-MM` = period end month):
-    responsable + per-driver `{ days: {'YYYY-MM-DD': code}, annotation }`, keyed by
-    `presence_drivers`. Read by both MonthlyRecap and FrankPage
+    responsable + per-driver annotation. `recap_entries.days` is kept in the schema
+    but no longer written (the day codes are derived from presence)
   - `GET/PUT /api/recap-config` — persisted recap destination email
     (`app_settings.recap_mail_to`). **Currently unused by the frontend** (the
     recap tab no longer emails); kept in case sending is re-added

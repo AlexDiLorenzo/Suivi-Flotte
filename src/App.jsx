@@ -34,18 +34,6 @@ const MONTHS_FULL = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
 // Lettre du jour de semaine, indexée par Date.getDay() (0 = dimanche)
 const WEEKDAY_LETTERS = ['D', 'L', 'M', 'M', 'J', 'V', 'S']
 
-// Codes du récapitulatif mensuel (légende du planning_mars_2026.csv).
-// Astreinte / WE travaillés = tons rouge-orangé (rouges sur l'original).
-const RECAP_CODES = [
-  { code: 'H1', meaning: 'Horaire de base (8h-17h, 2h de pause)', bg: '#C6E0B4' },
-  { code: 'A', meaning: 'Astreinte', bg: '#E59A9A' },
-  { code: 'WE', meaning: 'Weekend travaillé', bg: '#F2D2A9' },
-  { code: 'C', meaning: 'Congés', bg: '#F9E79F' },
-  { code: 'r', meaning: 'Repos', bg: '#D3D1C7' },
-  { code: 'rj', meaning: 'Repos journalier', bg: '#ECEBE3' },
-]
-const RECAP_BG = Object.fromEntries(RECAP_CODES.map((c) => [c.code, c.bg]))
-
 const ITEM_TYPES = ['Filtre à air', 'Filtre à huile', 'Filtre à gasoil',
   'Freins AV', 'Freins AR', 'Passage aux mines', 'Vidange', 'Pneumatiques', 'Autre']
 
@@ -72,9 +60,15 @@ const PRESENCE_CODES = [
   { code: 'AM', meaning: 'Arrêt maladie', bg: '#F4C7D9' },
   { code: 'AT', meaning: 'Accident de travail', bg: '#E59A9A' },
   { code: 'Férié', meaning: 'Jour férié', bg: '#F2D2A9' },
+  { code: 'WE', meaning: 'Week-end', bg: '#DCDAD0' },
 ]
 const CODE_BG = Object.fromEntries(PRESENCE_CODES.map((c) => [c.code, c.bg]))
 const MAIL_TO = 'compta@montpellierdepannage.com'
+
+// Week-end pré-rempli par défaut ; un week-end vide est considéré comme « WE »
+const WEEKEND_DEFAULT = 'WE'
+const isWeekendDate = (dt) => dt.getDay() === 0 || dt.getDay() === 6
+const effectiveCode = (dt, raw) => raw || (isWeekendDate(dt) ? WEEKEND_DEFAULT : '')
 
 /* ════════════════════════════════════════════════════════════
    API
@@ -219,8 +213,8 @@ function buildPresenceEmailHtml({ weekNum, range, responsable, drivers, grid, da
   const body = drivers.map((dr) => {
     const row = grid[dr.id] || {}
     return `<tr><td style="${td};font-weight:600">${esc(dr.nom)}</td>` +
-      DAY_KEYS.map((k) => {
-        const v = row[k] || ''
+      DAY_KEYS.map((k, i) => {
+        const v = effectiveCode(dayDates[i], row[k])
         const bg = CODE_BG[v] || '#fff'
         return `<td style="${td};text-align:center;background:${bg}">${esc(v)}</td>`
       }).join('') + '</tr>'
@@ -296,18 +290,30 @@ function summarizeRuns(dates) {
   return parts.join(' ; ')
 }
 
-/* Code de la grille → colonne du suivi Frank */
-const CODE_TO_COLUMN = { A: 'astreintes', rj: 'repos_journalier', r: 'repos', C: 'conges' }
+/* Code de présence → colonnes du suivi Frank.
+   Mapping par token (séparés par « / ») : un jour combiné compte dans
+   chaque colonne concernée. Ex. AS/CP → astreintes + congés. */
+function frankColumnsForCode(code) {
+  const tokens = String(code || '').split('/')
+  const cols = []
+  if (tokens.includes('AS')) cols.push('astreintes')
+  if (tokens.includes('RJ')) cols.push('repos_journalier')
+  if (tokens.includes('R')) cols.push('repos')
+  if (tokens.includes('CP')) cols.push('conges')
+  return cols
+}
 
-/* Construit les lignes du suivi Frank à partir de la grille du récap */
-function buildFrankRows(drivers, grid, periodDays) {
+/* Construit les lignes du suivi Frank à partir des codes de présence.
+   `presence` = { driverId: { 'YYYY-MM-DD': code } } ; les week-ends vides
+   sont déjà « WE » via effectiveCode (et WE ne se ventile dans aucune
+   colonne). `annotations` = { driverId: texte }. */
+function buildFrankRows(drivers, presence, annotations, periodDays) {
   return drivers.map((dr) => {
-    const e = grid[dr.id] || {}
-    const dd = e.days || {}
+    const dayMap = presence[dr.id] || {}
     const buckets = { astreintes: [], repos_journalier: [], repos: [], conges: [] }
     for (const dt of periodDays) {
-      const col = CODE_TO_COLUMN[dd[ymd(dt)]]
-      if (col) buckets[col].push(dt)
+      const code = effectiveCode(dt, dayMap[ymd(dt)])
+      for (const col of frankColumnsForCode(code)) buckets[col].push(dt)
     }
     return {
       nom: dr.nom,
@@ -315,7 +321,7 @@ function buildFrankRows(drivers, grid, periodDays) {
       repos_journalier: summarizeRuns(buckets.repos_journalier),
       repos: summarizeRuns(buckets.repos),
       conges: summarizeRuns(buckets.conges),
-      info: e.annotation || '',
+      info: annotations[dr.id] || '',
     }
   })
 }
@@ -326,8 +332,9 @@ function hexToRgb(hex) {
   return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null
 }
 
-/* Génération PDF (un clic) — récapitulatif mensuel, format paysage */
-function generateRecapPdf({ monthLabel, responsable, drivers, grid, periodDays, fileName }) {
+/* Génération PDF (un clic) — récapitulatif mensuel, format paysage.
+   Codes reconstruits depuis la présence (`presence`) + annotations. */
+function generateRecapPdf({ monthLabel, responsable, drivers, presence, annotations, periodDays, fileName }) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
 
   doc.setFont('helvetica', 'bold'); doc.setFontSize(13)
@@ -337,9 +344,12 @@ function generateRecapPdf({ monthLabel, responsable, drivers, grid, periodDays, 
 
   const head = ['NOM', ...periodDays.map((dt) => `${WEEKDAY_LETTERS[dt.getDay()]}\n${dt.getDate()}`), 'Annotation']
   const body = drivers.map((dr) => {
-    const e = grid[dr.id] || {}
-    const dd = e.days || {}
-    return [dr.nom, ...periodDays.map((dt) => dd[ymd(dt)] || ''), e.annotation || '']
+    const dayMap = presence[dr.id] || {}
+    return [
+      dr.nom,
+      ...periodDays.map((dt) => effectiveCode(dt, dayMap[ymd(dt)])),
+      annotations[dr.id] || '',
+    ]
   })
 
   autoTable(doc, {
@@ -362,9 +372,8 @@ function generateRecapPdf({ monthLabel, responsable, drivers, grid, periodDays, 
         if (w === 0 || w === 6) data.cell.styles.fillColor = [31, 69, 27]
       }
       if (data.section === 'body' && isDayCol) {
-        const rgb = hexToRgb(RECAP_BG[data.cell.raw])
+        const rgb = hexToRgb(CODE_BG[data.cell.raw])
         if (rgb) data.cell.styles.fillColor = rgb
-        else if ([0, 6].includes(periodDays[col - 1].getDay())) data.cell.styles.fillColor = [244, 243, 238]
       }
     },
   })
@@ -374,7 +383,7 @@ function generateRecapPdf({ monthLabel, responsable, drivers, grid, periodDays, 
   doc.text('Légende', 8, y)
   doc.setFont('helvetica', 'normal')
   doc.text(
-    RECAP_CODES.map((c) => `${c.code} = ${c.meaning}`).join('   ·   '),
+    PRESENCE_CODES.map((c) => `${c.code} = ${c.meaning}`).join('   ·   '),
     8, y + 5, { maxWidth: 281 }
   )
   doc.save(fileName)
@@ -1801,8 +1810,8 @@ function PresencePage() {
                 {drivers.map((dr) => (
                   <tr key={dr.id}>
                     <td style={{ ...tdBase, fontWeight: 600 }}>{dr.nom}</td>
-                    {DAY_KEYS.map((k) => {
-                      const v = (grid[dr.id] || {})[k] || ''
+                    {DAY_KEYS.map((k, i) => {
+                      const v = effectiveCode(dayDates[i], (grid[dr.id] || {})[k])
                       return (
                         <td key={k} style={{ ...tdBase, padding: 3, textAlign: 'center' }}>
                           <select value={v} onChange={(e) => setCell(dr.id, k, e.target.value)}
@@ -1916,7 +1925,8 @@ function TeamModal({ drivers, onClose, onSaved }) {
 }
 
 /* ════════════════════════════════════════════════════════════
-   Récapitulatif mensuel — planning du mois (base presence_drivers)
+   Récapitulatif mensuel — reconstitué depuis Présence Pérols
+   (lecture seule des codes ; seule l'annotation est éditable)
    ════════════════════════════════════════════════════════════ */
 function MonthlyRecap() {
   const notify = useToast()
@@ -1925,32 +1935,38 @@ function MonthlyRecap() {
   const month = anchor.getMonth() + 1
   const monthLabel = `${MONTHS_FULL[month - 1]} ${anchor.getFullYear()}`
   const periodDays = useMemo(() => recapPeriod(anchor), [anchor])
+  const from = periodDays.length ? ymd(periodDays[0]) : ''
+  const to = periodDays.length ? ymd(periodDays[periodDays.length - 1]) : ''
   const periodLabel = periodDays.length
     ? `du ${ddmm(periodDays[0])} au ${ddmm(periodDays[periodDays.length - 1])} ${periodDays[periodDays.length - 1].getFullYear()}`
     : ''
-  const isWknd = (dt) => dt.getDay() === 0 || dt.getDay() === 6
 
   const [drivers, setDrivers] = useState([])
   const [responsable, setResponsable] = useState('')
-  const [grid, setGrid] = useState({}) // { driverId: { days: {isoDate: code}, annotation } }
+  const [presence, setPresence] = useState({}) // { driverId: { isoDate: code } } — depuis la présence
+  const [annotations, setAnnotations] = useState({}) // { driverId: texte }
   const [loading, setLoading] = useState(true)
   const [saveState, setSaveState] = useState('saved') // 'saving' | 'saved'
   const skipSave = useRef(true)
 
-  // Chargement du mois (équipe partagée avec Présence Pérols et Suivi Frank)
+  // Chargement : équipe + présence de la période + annotations/responsable du récap
   useEffect(() => {
     let alive = true
     setLoading(true)
     skipSave.current = true
     Promise.all([
       apiFetch('/presence/drivers'),
+      apiFetch(`/presence/range/${from}/${to}`),
       apiFetch('/recap/' + monthKey),
     ])
-      .then(([drv, rec]) => {
+      .then(([drv, range, rec]) => {
         if (!alive) return
         setDrivers(drv)
+        setPresence(range.entries || {})
         setResponsable(rec.responsable || '')
-        setGrid(rec.entries || {})
+        const anns = {}
+        for (const [id, e] of Object.entries(rec.entries || {})) anns[id] = e.annotation || ''
+        setAnnotations(anns)
       })
       .catch((err) => { if (alive) notify(err.message, 'error') })
       .finally(() => {
@@ -1960,16 +1976,16 @@ function MonthlyRecap() {
         setTimeout(() => { skipSave.current = false }, 0)
       })
     return () => { alive = false }
-  }, [monthKey, notify])
+  }, [monthKey, from, to, notify])
 
-  // Enregistrement automatique (anti-rebond 700 ms)
+  // Enregistrement automatique du responsable + annotations (anti-rebond 700 ms)
   useEffect(() => {
     if (skipSave.current || loading) return
     setSaveState('saving')
     const t = setTimeout(async () => {
       try {
         const entries = {}
-        for (const d of drivers) entries[d.id] = grid[d.id] || { days: {}, annotation: '' }
+        for (const d of drivers) entries[d.id] = { days: {}, annotation: annotations[d.id] || '' }
         await apiFetch('/recap/' + monthKey, {
           method: 'PUT',
           body: JSON.stringify({ responsable, entries }),
@@ -1980,22 +1996,14 @@ function MonthlyRecap() {
       }
     }, 700)
     return () => clearTimeout(t)
-  }, [responsable, grid, drivers, monthKey, loading, notify])
+  }, [responsable, annotations, drivers, monthKey, loading, notify])
 
-  const setCell = (driverId, isoDate, value) =>
-    setGrid((g) => {
-      const cur = g[driverId] || { days: {}, annotation: '' }
-      return { ...g, [driverId]: { ...cur, days: { ...cur.days, [isoDate]: value } } }
-    })
   const setAnnotation = (driverId, value) =>
-    setGrid((g) => {
-      const cur = g[driverId] || { days: {}, annotation: '' }
-      return { ...g, [driverId]: { ...cur, annotation: value } }
-    })
+    setAnnotations((a) => ({ ...a, [driverId]: value }))
 
   const downloadPdf = () =>
     generateRecapPdf({
-      monthLabel, responsable, drivers, grid, periodDays,
+      monthLabel, responsable, drivers, presence, annotations, periodDays,
       fileName: `recap_${monthKey}.pdf`,
     })
 
@@ -2025,6 +2033,10 @@ function MonthlyRecap() {
           Récapitulatif mensuel — {monthLabel}
         </h1>
         <p style={{ fontSize: 14, color: C.muted, marginTop: 2 }}>Période {periodLabel}</p>
+        <p style={{ fontSize: 12.5, color: C.muted, marginTop: 8 }}>
+          Reconstitué automatiquement depuis <strong>Présence Pérols</strong> ·
+          seule la colonne <strong>Annotation</strong> est éditable ici.
+        </p>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '16px 0 14px', flexWrap: 'wrap' }}>
           <label style={{ ...S.label, marginBottom: 0 }}>Nom du responsable</label>
@@ -2053,7 +2065,7 @@ function MonthlyRecap() {
                   {periodDays.map((dt) => (
                     <th key={ymd(dt)} style={{
                       ...thBase, minWidth: 30, padding: '6px 2px',
-                      background: isWknd(dt) ? '#DCDAD0' : '#EDECE4',
+                      background: isWeekendDate(dt) ? '#DCDAD0' : '#EDECE4',
                     }}>
                       <div style={{ fontSize: 9.5, color: C.muted }}>{WEEKDAY_LETTERS[dt.getDay()]}</div>
                       {dt.getDate()}
@@ -2064,8 +2076,7 @@ function MonthlyRecap() {
               </thead>
               <tbody>
                 {drivers.map((dr) => {
-                  const e = grid[dr.id] || {}
-                  const dd = e.days || {}
+                  const dayMap = presence[dr.id] || {}
                   return (
                     <tr key={dr.id}>
                       <td style={{
@@ -2073,31 +2084,21 @@ function MonthlyRecap() {
                         background: C.panel,
                       }}>{dr.nom}</td>
                       {periodDays.map((dt) => {
-                        const key = ymd(dt)
-                        const v = dd[key] || ''
+                        const code = effectiveCode(dt, dayMap[ymd(dt)])
                         return (
-                          <td key={key} style={{
-                            ...tdBase, padding: 2, textAlign: 'center',
-                            background: v ? undefined : (isWknd(dt) ? '#F4F3EE' : undefined),
+                          <td key={ymd(dt)} style={{
+                            ...tdBase, padding: '5px 2px', textAlign: 'center',
+                            fontWeight: 600, fontSize: 11.5,
+                            background: CODE_BG[code] || '#fff',
                           }}>
-                            <select value={v} onChange={(ev) => setCell(dr.id, key, ev.target.value)}
-                              style={{
-                                width: '100%', padding: '5px 1px', borderRadius: 5, fontSize: 11.5,
-                                fontWeight: 600, border: `1px solid ${C.border}`,
-                                textAlign: 'center', textAlignLast: 'center',
-                                background: RECAP_BG[v] || (isWknd(dt) ? '#F4F3EE' : '#fff'), color: C.ink,
-                              }}>
-                              <option value="">—</option>
-                              {RECAP_CODES.map((c) => (
-                                <option key={c.code} value={c.code}>{c.code}</option>
-                              ))}
-                            </select>
+                            {code || ''}
                           </td>
                         )
                       })}
                       <td style={{ ...tdBase, padding: 3 }}>
-                        <input value={e.annotation || ''}
+                        <input value={annotations[dr.id] || ''}
                           onChange={(ev) => setAnnotation(dr.id, ev.target.value)}
+                          placeholder="Informations supplémentaires…"
                           style={{ ...inSm, fontSize: 12 }} />
                       </td>
                     </tr>
@@ -2112,7 +2113,7 @@ function MonthlyRecap() {
         <div style={{ marginTop: 16 }}>
           <div style={S.label}>Légende</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {RECAP_CODES.map((c) => (
+            {PRESENCE_CODES.map((c) => (
               <span key={c.code} style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12,
                 background: c.bg, padding: '3px 9px', borderRadius: 20,
@@ -2120,10 +2121,6 @@ function MonthlyRecap() {
                 <strong>{c.code}</strong> {c.meaning}
               </span>
             ))}
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12,
-              background: '#F4F3EE', padding: '3px 9px', borderRadius: 20, color: C.muted,
-            }}>weekend</span>
           </div>
         </div>
       </div>
@@ -2141,38 +2138,48 @@ function FrankPage() {
   const month = anchor.getMonth() + 1
   const monthLabel = `${MONTHS_FULL[month - 1]} ${anchor.getFullYear()}`
   const periodDays = useMemo(() => recapPeriod(anchor), [anchor])
+  const from = periodDays.length ? ymd(periodDays[0]) : ''
+  const to = periodDays.length ? ymd(periodDays[periodDays.length - 1]) : ''
   const periodLabel = periodDays.length
     ? `du ${ddmm(periodDays[0])} au ${ddmm(periodDays[periodDays.length - 1])} ${periodDays[periodDays.length - 1].getFullYear()}`
     : ''
 
   const [drivers, setDrivers] = useState([])
-  const [grid, setGrid] = useState({})
+  const [presence, setPresence] = useState({}) // { driverId: { isoDate: code } }
+  const [annotations, setAnnotations] = useState({}) // { driverId: texte }
   const [mailTo, setMailTo] = useState('')
   const [loading, setLoading] = useState(true)
   const [sendConfirm, setSendConfirm] = useState(false)
   const [sending, setSending] = useState(false)
 
-  // Lecture seule : on relit la grille du récapitulatif pour la période
+  // Lecture seule : présence de la période + annotations du récap + adresse Frank
   useEffect(() => {
     let alive = true
     setLoading(true)
     Promise.all([
       apiFetch('/presence/drivers'),
+      apiFetch(`/presence/range/${from}/${to}`),
       apiFetch('/recap/' + monthKey),
       apiFetch('/frank-config'),
     ])
-      .then(([drv, rec, cfg]) => {
+      .then(([drv, range, rec, cfg]) => {
         if (!alive) return
         setDrivers(drv)
-        setGrid(rec.entries || {})
+        setPresence(range.entries || {})
+        const anns = {}
+        for (const [id, e] of Object.entries(rec.entries || {})) anns[id] = e.annotation || ''
+        setAnnotations(anns)
         setMailTo(cfg.mailTo || '')
       })
       .catch((err) => { if (alive) notify(err.message, 'error') })
       .finally(() => { if (alive) setLoading(false) })
     return () => { alive = false }
-  }, [monthKey, notify])
+  }, [monthKey, from, to, notify])
 
-  const rows = useMemo(() => buildFrankRows(drivers, grid, periodDays), [drivers, grid, periodDays])
+  const rows = useMemo(
+    () => buildFrankRows(drivers, presence, annotations, periodDays),
+    [drivers, presence, annotations, periodDays]
+  )
 
   const saveMailTo = async () => {
     try {

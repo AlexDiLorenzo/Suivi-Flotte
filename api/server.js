@@ -387,6 +387,41 @@ app.put("/api/presence/week/:weekStart", wrap(async (req, res) => {
   }
 }));
 
+// Codes de présence sur une plage de dates (récap mensuel & suivi Frank).
+// Étend les semaines (lun→dim) en dates réelles et renvoie
+// { entries: { driverId: { 'YYYY-MM-DD': code } } } pour les dates de la
+// plage. Mêmes conventions de date (locales) que le front (mondayOf/ymd).
+app.get("/api/presence/range/:from/:to", wrap(async (req, res) => {
+  const { from, to } = req.params;
+  const pad = (n) => String(n).padStart(2, "0");
+  const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const parse = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d, 12); };
+  const mondayOf = (s) => {
+    const d = parse(s);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    return fmt(d);
+  };
+  const dayKeys = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
+  const { rows } = await pool.query(
+    "SELECT * FROM presence_entries WHERE week_start >= $1 AND week_start <= $2",
+    [mondayOf(from), to]
+  );
+  const entries = {};
+  for (const r of rows) {
+    const base = parse(r.week_start);
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(base);
+      d.setDate(d.getDate() + i);
+      const iso = fmt(d);
+      if (iso < from || iso > to) continue;
+      const code = r[dayKeys[i]];
+      if (!code) continue;
+      (entries[r.driver_id] ||= {})[iso] = code;
+    }
+  }
+  res.json({ entries });
+}));
+
 // ── Récapitulatif mensuel ───────────────────────────────────
 // Réutilise presence_drivers comme base d'employés. Les codes de
 // chaque jour sont stockés en JSON par employé et par mois.
