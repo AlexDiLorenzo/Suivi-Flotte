@@ -43,18 +43,19 @@ recap and the Frank on-call summary).
 
 - **MonthlyRecap** = the monthly recap tab (`récapitulatif mensuel`), modelled
   on `PresencePage` and reproducing `planning_mars_2026.csv`. Rows = the **same**
-  `presence_drivers` team (managed by the shared `TeamModal`). The period runs
-  **from the 25th of the previous month to the 25th of the displayed month**
-  (`recapPeriod`), so it straddles two months — cells are therefore keyed by full
-  **ISO date** (`grid[driverId].days['YYYY-MM-DD']`), not day-of-month. Columns =
-  one per day (weekday letter + day number, weekends tinted) plus a free-text
-  `Annotation` column. Codes are `RECAP_CODES` (`H1`/`A`/`WE`/`C`/`r`/`rj`). Month
-  navigation by a first-of-month anchor (`firstOfMonth`/`addMonths`/`ym`); the
-  monthKey (`AAAA-MM`) is the **end** month. The grid auto-saves (debounced
-  700 ms, same `skipSave` pattern as presence). Actions: **Télécharger PDF**
-  (`generateRecapPdf`, `jspdf` + `jspdf-autotable`, landscape) and **Envoyer le
-  récapitulatif** to a persisted address (`app_settings.recap_mail_to`). This tab
-  is the **data-entry surface**; FrankPage is derived from it.
+  `presence_drivers` team. The period runs **from the 25th of the previous month
+  to the 25th of the displayed month** (`recapPeriod`), so it straddles two months
+  — cells are therefore keyed by full **ISO date**
+  (`grid[driverId].days['YYYY-MM-DD']`), not day-of-month. Columns = one per day
+  (weekday letter + day number, weekends tinted) plus a free-text `Annotation`
+  column. Codes are `RECAP_CODES` (`H1`/`A`/`WE`/`C`/`r`/`rj`). Month navigation by
+  a first-of-month anchor (`firstOfMonth`/`addMonths`/`ym`); the monthKey
+  (`AAAA-MM`) is the **end** month. The grid auto-saves (debounced 700 ms, same
+  `skipSave` pattern as presence). This tab is the **data-entry surface** and is
+  **not emailed** — its only action is **Télécharger PDF** (`generateRecapPdf`,
+  `jspdf` + `jspdf-autotable`, landscape, for the user's own use). FrankPage is
+  the derived, sendable view. **Team editing lives only in Présence Pérols** (the
+  shared `TeamModal` writes `presence_drivers`); recap and Frank merely read it.
 
 - **FrankPage** = the **Suivi Frank** tab (`recap_astreintes_mars_2026.csv`), a
   read-only **derived** view: it re-reads the recap grid for the same 25→25
@@ -137,7 +138,8 @@ recap and the Frank on-call summary).
     responsable + per-driver `{ days: {'YYYY-MM-DD': code}, annotation }`, keyed by
     `presence_drivers`. Read by both MonthlyRecap and FrankPage
   - `GET/PUT /api/recap-config` — persisted recap destination email
-    (`app_settings.recap_mail_to`)
+    (`app_settings.recap_mail_to`). **Currently unused by the frontend** (the
+    recap tab no longer emails); kept in case sending is re-added
   - `GET/PUT /api/frank-config` — persisted Frank destination email
     (`app_settings.frank_mail_to`). Both configs share `getSetting`/`setSetting`
   - `POST /api/send-mail` — emails an HTML table via Resend. Sends to the
@@ -156,9 +158,9 @@ still works.
 
 The **monthly recap** and **Suivi Frank** tabs do not use `window.print()`: each
 generates a real PDF client-side in one click (`generateRecapPdf` landscape /
-`generateFrankPdf` portrait, `jspdf` + `jspdf-autotable`) and emails via the same
-`POST /api/send-mail` but with an explicit `to` address (the persisted
-`app_settings.recap_mail_to` / `frank_mail_to`), not the compta default.
+`generateFrankPdf` portrait, `jspdf` + `jspdf-autotable`). Only **Suivi Frank** is
+emailed (`buildFrankEmailHtml` → `POST /api/send-mail` with an explicit `to`, the
+persisted `app_settings.frank_mail_to`); the monthly recap is download-only.
 
 ### `api/seedData.js`
 
