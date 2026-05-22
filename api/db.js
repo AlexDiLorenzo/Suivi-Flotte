@@ -151,6 +151,18 @@ export async function initDB() {
         PRIMARY KEY (week_start, driver_id)
       );
 
+      -- Ligne « Opération spéciale » du planning : un texte libre par jour
+      CREATE TABLE IF NOT EXISTS planning_special (
+        week_start TEXT PRIMARY KEY,
+        lun TEXT NOT NULL DEFAULT '',
+        mar TEXT NOT NULL DEFAULT '',
+        mer TEXT NOT NULL DEFAULT '',
+        jeu TEXT NOT NULL DEFAULT '',
+        ven TEXT NOT NULL DEFAULT '',
+        sam TEXT NOT NULL DEFAULT '',
+        dim TEXT NOT NULL DEFAULT ''
+      );
+
       -- Date du prochain contrôle technique (remplace le planning mois/jour)
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS ct_date TEXT NOT NULL DEFAULT '';
       -- Échéance d'assurance et statut d'exploitation du véhicule

@@ -65,7 +65,7 @@ const PRESENCE_CODES = [
 const CODE_BG = Object.fromEntries(PRESENCE_CODES.map((c) => [c.code, c.bg]))
 const MAIL_TO = 'compta@montpellierdepannage.com'
 
-// Planning hebdomadaire — options par cellule (Opération spéciale = couleur flashy)
+// Planning hebdomadaire — statut par dépanneur et par jour
 const PLANNING_OPTIONS = [
   { code: 'P', label: 'Présent', bg: '#C6E0B4' },
   { code: 'AS', label: 'Astreinte', bg: '#B7D7E8' },
@@ -73,10 +73,11 @@ const PLANNING_OPTIONS = [
   { code: 'R', label: 'Repos', bg: '#D3D1C7' },
   { code: 'CP', label: 'Congés', bg: '#F9E79F' },
   { code: 'F', label: 'Férié', bg: '#F2D2A9' },
-  { code: 'OPS', label: 'Opération spéciale', bg: '#FF3DA5' },
 ]
 const PLANNING_BG = Object.fromEntries(PLANNING_OPTIONS.map((o) => [o.code, o.bg]))
 const PLANNING_LABEL = Object.fromEntries(PLANNING_OPTIONS.map((o) => [o.code, o.label]))
+// Ligne « Opération spéciale » (texte libre par jour) — couleur flashy
+const SPECIAL_BG = '#FF3DA5'
 
 // Week-end pré-rempli par défaut ; un week-end vide est considéré comme « WE »
 const WEEKEND_DEFAULT = 'WE'
@@ -450,8 +451,10 @@ function generateFrankPdf({ monthLabel, periodLabel, rows, fileName }) {
 }
 
 /* Génération PDF (un clic) — planning hebdomadaire, format paysage.
-   Grand et lisible, pensé pour l'impression et l'affichage atelier. */
-function generatePlanningPdf({ weekNum, range, drivers, grid, dayDates, fileName }) {
+   Grand et lisible, pensé pour l'impression et l'affichage atelier.
+   La 1re ligne « Opération spéciale » (texte libre par jour) est mise
+   en évidence en couleur flashy. */
+function generatePlanningPdf({ weekNum, range, drivers, grid, special, dayDates, fileName }) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
   doc.setFont('helvetica', 'bold'); doc.setFontSize(17)
   doc.text(`PLANNING — SEMAINE ${weekNum}`, 10, 15)
@@ -459,18 +462,21 @@ function generatePlanningPdf({ weekNum, range, drivers, grid, dayDates, fileName
   doc.text(`Montpellier Dépannage · ${range}`, 10, 22)
 
   const head = ['DÉPANNEUR', ...DAYS.map((d, i) => `${d}\n${ddmm(dayDates[i])}`)]
-  const body = drivers.map((dr) => {
+  const specialRow = ['OPÉRATION SPÉCIALE', ...DAY_KEYS.map((k) => (special || {})[k] || '')]
+  const driverRows = drivers.map((dr) => {
     const row = grid[dr.id] || {}
     return [dr.nom, ...DAY_KEYS.map((k) => PLANNING_LABEL[row[k]] || '')]
   })
+  const body = [specialRow, ...driverRows]
+  const flashy = hexToRgb(SPECIAL_BG)
 
   // Dimensionnement dynamique pour TOUJOURS tenir sur une seule page :
-  // on répartit la hauteur disponible entre l'en-tête et les lignes, puis
-  // on adapte la police et les marges des cellules à la hauteur de ligne.
+  // on répartit la hauteur disponible entre l'en-tête, la ligne spéciale
+  // et les dépanneurs, puis on adapte la police et les marges.
   const startY = 27
   const bottomReserve = 16 // place pour la légende + marge basse
   const pageH = doc.internal.pageSize.getHeight()
-  const rowCount = drivers.length + 1 // + ligne d'en-tête
+  const rowCount = drivers.length + 2 // + en-tête + ligne opération spéciale
   const avail = pageH - startY - bottomReserve
   const rowH = Math.max(4.5, Math.min(13, avail / rowCount))
   const fontSize = Math.max(5.5, Math.min(11, rowH * 0.82))
@@ -490,8 +496,22 @@ function generatePlanningPdf({ weekNum, range, drivers, grid, dayDates, fileName
     },
     columnStyles: { 0: { halign: 'left', fontStyle: 'bold', cellWidth: 38 } },
     didParseCell: (data) => {
-      if (data.section === 'body' && data.column.index > 0) {
-        const dr = drivers[data.row.index]
+      if (data.section !== 'body') return
+      const isSpecial = data.row.index === 0
+      if (isSpecial) {
+        // Libellé en flashy, cases du jour en flashy si renseignées
+        data.cell.styles.fontStyle = 'bold'
+        if (data.column.index === 0) {
+          data.cell.styles.fillColor = flashy
+          data.cell.styles.textColor = [255, 255, 255]
+        } else if (data.cell.raw) {
+          data.cell.styles.fillColor = flashy
+          data.cell.styles.textColor = [255, 255, 255]
+        }
+        return
+      }
+      if (data.column.index > 0) {
+        const dr = drivers[data.row.index - 1]
         const code = (grid[dr.id] || {})[DAY_KEYS[data.column.index - 1]]
         const rgb = hexToRgb(PLANNING_BG[code])
         if (rgb) data.cell.styles.fillColor = rgb
@@ -2411,6 +2431,7 @@ function PlanningPage() {
 
   const [drivers, setDrivers] = useState([])
   const [grid, setGrid] = useState({})
+  const [special, setSpecial] = useState({}) // { lun..dim: texte } — opération spéciale
   const [loading, setLoading] = useState(true)
   const [saveState, setSaveState] = useState('saved') // 'saving' | 'saved'
   const skipSave = useRef(true)
@@ -2425,6 +2446,7 @@ function PlanningPage() {
         if (!alive) return
         setDrivers(drv)
         setGrid(wk.entries || {})
+        setSpecial(wk.special || {})
       })
       .catch((err) => { if (alive) notify(err.message, 'error') })
       .finally(() => {
@@ -2446,7 +2468,7 @@ function PlanningPage() {
         for (const d of drivers) entries[d.id] = grid[d.id] || {}
         await apiFetch('/planning/week/' + weekStart, {
           method: 'PUT',
-          body: JSON.stringify({ entries }),
+          body: JSON.stringify({ entries, special }),
         })
         setSaveState('saved')
       } catch (err) {
@@ -2454,10 +2476,12 @@ function PlanningPage() {
       }
     }, 700)
     return () => clearTimeout(t)
-  }, [grid, drivers, weekStart, loading, notify])
+  }, [grid, special, drivers, weekStart, loading, notify])
 
   const setCell = (driverId, dayKey, value) =>
     setGrid((g) => ({ ...g, [driverId]: { ...(g[driverId] || {}), [dayKey]: value } }))
+  const setSpecialCell = (dayKey, value) =>
+    setSpecial((s) => ({ ...s, [dayKey]: value }))
 
   // Jour férié : applique « F » à tous les dépanneurs pour ce jour
   // (bascule — re-cliquer efface le férié de la colonne).
@@ -2474,7 +2498,7 @@ function PlanningPage() {
     })
 
   const downloadPdf = () =>
-    generatePlanningPdf({ weekNum, range, drivers, grid, dayDates, fileName: `planning_S${weekNum}_${weekStart}.pdf` })
+    generatePlanningPdf({ weekNum, range, drivers, grid, special, dayDates, fileName: `planning_S${weekNum}_${weekStart}.pdf` })
 
   return (
     <div style={{ maxWidth: 1320, margin: '0 auto' }}>
@@ -2550,6 +2574,32 @@ function PlanningPage() {
                 </tr>
               </thead>
               <tbody>
+                {/* Ligne Opération spéciale — texte libre par jour, flashy si rempli */}
+                <tr>
+                  <td style={{
+                    ...tdBase, fontWeight: 800, fontSize: 12, textTransform: 'uppercase',
+                    letterSpacing: 0.4, color: '#fff', background: SPECIAL_BG,
+                  }}>Opération spéciale</td>
+                  {DAY_KEYS.map((k) => {
+                    const v = special[k] || ''
+                    return (
+                      <td key={k} style={{
+                        ...tdBase, padding: 4, textAlign: 'center',
+                        background: v ? SPECIAL_BG : undefined,
+                      }}>
+                        <input value={v} onChange={(e) => setSpecialCell(k, e.target.value)}
+                          placeholder="—"
+                          style={{
+                            width: '100%', padding: '8px 5px', borderRadius: 7, fontSize: 13,
+                            fontWeight: 700, border: `1px solid ${v ? SPECIAL_BG : C.border}`,
+                            textAlign: 'center',
+                            background: v ? SPECIAL_BG : '#fff',
+                            color: v ? '#fff' : C.ink,
+                          }} />
+                      </td>
+                    )
+                  })}
+                </tr>
                 {drivers.map((dr) => (
                   <tr key={dr.id}>
                     <td style={{ ...tdBase, fontWeight: 700, fontSize: 14 }}>{dr.nom}</td>
@@ -2562,8 +2612,7 @@ function PlanningPage() {
                               width: '100%', padding: '10px 4px', borderRadius: 7, fontSize: 13.5,
                               fontWeight: 700, border: `1px solid ${C.border}`,
                               textAlign: 'center', textAlignLast: 'center',
-                              background: PLANNING_BG[v] || '#fff',
-                              color: v === 'OPS' ? '#fff' : C.ink,
+                              background: PLANNING_BG[v] || '#fff', color: C.ink,
                             }}>
                             <option value="">—</option>
                             {PLANNING_OPTIONS.map((o) => (
@@ -2587,12 +2636,19 @@ function PlanningPage() {
             {PLANNING_OPTIONS.map((o) => (
               <span key={o.code} style={{
                 display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13,
-                background: o.bg, color: o.code === 'OPS' ? '#fff' : C.ink,
+                background: o.bg, color: C.ink,
                 padding: '5px 12px', borderRadius: 20, fontWeight: 600,
               }}>
                 {o.label}
               </span>
             ))}
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13,
+              background: SPECIAL_BG, color: '#fff',
+              padding: '5px 12px', borderRadius: 20, fontWeight: 600,
+            }}>
+              Opération spéciale (ligne en haut)
+            </span>
           </div>
         </div>
       </div>

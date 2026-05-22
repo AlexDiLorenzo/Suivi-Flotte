@@ -391,8 +391,9 @@ app.put("/api/presence/week/:weekStart", wrap(async (req, res) => {
 // ── Planning hebdomadaire ───────────────────────────────────
 // Grille lundi→dimanche par employé (codes P / AS / RJ / R / CP / OPS).
 app.get("/api/planning/week/:weekStart", wrap(async (req, res) => {
+  const ws = req.params.weekStart;
   const { rows } = await pool.query(
-    "SELECT * FROM planning_entries WHERE week_start=$1", [req.params.weekStart]
+    "SELECT * FROM planning_entries WHERE week_start=$1", [ws]
   );
   const map = {};
   for (const e of rows) {
@@ -401,12 +402,16 @@ app.get("/api/planning/week/:weekStart", wrap(async (req, res) => {
       ven: e.ven, sam: e.sam, dim: e.dim,
     };
   }
-  res.json({ entries: map });
+  const { rows: sp } = await pool.query(
+    "SELECT lun, mar, mer, jeu, ven, sam, dim FROM planning_special WHERE week_start=$1", [ws]
+  );
+  const empty = { lun: "", mar: "", mer: "", jeu: "", ven: "", sam: "", dim: "" };
+  res.json({ entries: map, special: sp[0] || empty });
 }));
 
 app.put("/api/planning/week/:weekStart", wrap(async (req, res) => {
   const ws = req.params.weekStart;
-  const { entries } = req.body;
+  const { entries, special } = req.body;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -422,6 +427,14 @@ app.put("/api/planning/week/:weekStart", wrap(async (req, res) => {
         ]
       );
     }
+    const s = special || {};
+    await client.query(
+      `INSERT INTO planning_special (week_start, lun, mar, mer, jeu, ven, sam, dim)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (week_start) DO UPDATE SET
+         lun=$2, mar=$3, mer=$4, jeu=$5, ven=$6, sam=$7, dim=$8`,
+      [ws, s.lun || "", s.mar || "", s.mer || "", s.jeu || "", s.ven || "", s.sam || "", s.dim || ""]
+    );
     await client.query("COMMIT");
     res.json({ ok: true });
   } catch (err) {

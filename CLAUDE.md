@@ -43,17 +43,21 @@ sheet, the weekly planning, the monthly recap and the Frank on-call summary).
 
 - **PlanningPage** = the **Planning** tab: a weekly Mon→Sun grid (same
   `presence_drivers` rows) built for wall display / printing. **Independent,
-  editable** data (not derived from presence) with its own options
+  editable** data (not derived from presence). Per-driver status options
   `PLANNING_OPTIONS` — `P` Présent / `AS` Astreinte / `RJ` Repos jour / `R` Repos
-  / `CP` Congés / `F` Férié / `OPS` Opération spéciale (flashy pink `#FF3DA5`).
+  / `CP` Congés / `F` Férié. A dedicated **"Opération spéciale" row** sits at the
+  top of the body (between header and first driver): a **free-text** input per day,
+  highlighted in flashy pink (`SPECIAL_BG` `#FF3DA5`) when filled — stored in its
+  own `planning_special` table (1 row/week, `lun…dim`), not a per-driver code.
   Each day-column header has a **Férié** toggle (`toggleFerie`) that sets/clears
   `F` for the whole column (everyone) at once. Same weekly `mondayOf`/auto-save
-  (700 ms, `skipSave`) pattern as `PresencePage`, stored in its own
-  `planning_entries` table (`GET/PUT /api/planning/week/:weekStart`, no
-  responsable). Actions: **Imprimer** (`doPrint('landscape')`) and **Télécharger
-  PDF** (`generatePlanningPdf`, landscape). Both **always fit on one page**: the
-  PDF sizes rows/font dynamically to the page height (`pageBreak:'avoid'`), and
-  `@media print .planning-area` compacts the on-screen table.
+  (700 ms, `skipSave`) pattern as `PresencePage`; `GET/PUT
+  /api/planning/week/:weekStart` carries both `entries` (driver grid) and
+  `special` (the ops row). Actions: **Imprimer** (`doPrint('landscape')`) and
+  **Télécharger PDF** (`generatePlanningPdf`, landscape, special row first).
+  Both **always fit on one page**: the PDF sizes rows/font dynamically to the page
+  height (`pageBreak:'avoid'`), and `@media print .planning-area` compacts the
+  on-screen table.
 
 **Single source of truth = the weekly presence sheet.** The team chief only fills
 **Présence Pérols** (week by week); MonthlyRecap and FrankPage are **read-only,
@@ -133,7 +137,8 @@ everywhere without being persisted — pick `AS` (or any code) to override.
 - Tables: `users`, `categories`, `vehicles`, `interventions`,
   `intervention_items`, `presence_drivers`, `presence_weeks`,
   `presence_entries`, `planning_entries` (weekly Mon→Sun planning, keyed by
-  `week_start` + `driver_id`), `recap_months`, `recap_entries` (per-driver `days`
+  `week_start` + `driver_id`), `planning_special` (the planning's special-ops row,
+  1 per `week_start`), `recap_months`, `recap_entries` (per-driver `days`
   JSONB + `annotation`, keyed by `month` + `driver_id`), `app_settings` (key/value).
   `vehicles.ct_date` (`YYYY-MM-DD`) stores the next
   technical-inspection date — the CT cycle is **biennial**. `assurance_date`
