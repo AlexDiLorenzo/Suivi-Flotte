@@ -88,6 +88,7 @@ app.use("/api/interventions", auth);
 app.use("/api/presence", auth);
 app.use("/api/recap", auth);
 app.use("/api/recap-config", auth);
+app.use("/api/frank-config", auth);
 app.use("/api/send-mail", auth);
 app.use("/api/stats", auth);
 
@@ -433,21 +434,36 @@ app.put("/api/recap/:month", wrap(async (req, res) => {
   }
 }));
 
-// Adresse d'envoi prédéfinie du récapitulatif (réglage global)
-app.get("/api/recap-config", wrap(async (_req, res) => {
-  const { rows } = await pool.query(
-    "SELECT value FROM app_settings WHERE key='recap_mail_to'"
+// Adresses d'envoi prédéfinies (réglages globaux clé/valeur)
+async function getSetting(key) {
+  const { rows } = await pool.query("SELECT value FROM app_settings WHERE key=$1", [key]);
+  return rows[0]?.value || "";
+}
+async function setSetting(key, value) {
+  await pool.query(
+    `INSERT INTO app_settings (key, value) VALUES ($1,$2)
+     ON CONFLICT (key) DO UPDATE SET value=$2`,
+    [key, value]
   );
-  res.json({ mailTo: rows[0]?.value || "" });
-}));
+}
 
+// Adresse d'envoi du récapitulatif mensuel
+app.get("/api/recap-config", wrap(async (_req, res) => {
+  res.json({ mailTo: await getSetting("recap_mail_to") });
+}));
 app.put("/api/recap-config", wrap(async (req, res) => {
   const mailTo = (req.body?.mailTo || "").trim();
-  await pool.query(
-    `INSERT INTO app_settings (key, value) VALUES ('recap_mail_to', $1)
-     ON CONFLICT (key) DO UPDATE SET value=$1`,
-    [mailTo]
-  );
+  await setSetting("recap_mail_to", mailTo);
+  res.json({ mailTo });
+}));
+
+// Adresse d'envoi du suivi Frank
+app.get("/api/frank-config", wrap(async (_req, res) => {
+  res.json({ mailTo: await getSetting("frank_mail_to") });
+}));
+app.put("/api/frank-config", wrap(async (req, res) => {
+  const mailTo = (req.body?.mailTo || "").trim();
+  await setSetting("frank_mail_to", mailTo);
   res.json({ mailTo });
 }));
 

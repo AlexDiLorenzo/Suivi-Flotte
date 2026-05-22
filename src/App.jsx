@@ -261,9 +261,63 @@ function ym(d) {
   const x = new Date(d)
   return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}`
 }
-/* Nombre de jours d'un mois (month = 1-12) */
-function daysInMonth(year, month) {
-  return new Date(year, month, 0).getDate()
+/* Période du récapitulatif : du 25 du mois précédent au 25 du mois
+   affiché (inclus). `anchor` = 1er du mois affiché. Renvoie la liste
+   des dates (objets Date à 12 h) — la période chevauche deux mois,
+   les cellules sont donc indexées par date ISO complète. */
+function recapPeriod(anchor) {
+  const y = anchor.getFullYear()
+  const m = anchor.getMonth() // 0-11
+  const start = new Date(y, m - 1, 25, 12, 0, 0, 0)
+  const end = new Date(y, m, 25, 12, 0, 0, 0)
+  const out = []
+  for (let d = new Date(start); d <= end; d = addDays(d, 1)) out.push(new Date(d))
+  return out
+}
+
+/* Agrège une liste de dates triées en plages lisibles :
+   jour isolé → « le JJ/MM », jours consécutifs → « du JJ/MM au JJ/MM »,
+   plusieurs entrées jointes par « ; ». */
+function summarizeRuns(dates) {
+  if (!dates.length) return ''
+  const parts = []
+  const flush = (a, b) =>
+    parts.push(ymd(a) === ymd(b) ? `le ${ddmm(a)}` : `du ${ddmm(a)} au ${ddmm(b)}`)
+  let runStart = dates[0]
+  let prev = dates[0]
+  for (let i = 1; i < dates.length; i++) {
+    const d = dates[i]
+    if (Math.round((d - prev) / 864e5) === 1) { prev = d; continue }
+    flush(runStart, prev)
+    runStart = d
+    prev = d
+  }
+  flush(runStart, prev)
+  return parts.join(' ; ')
+}
+
+/* Code de la grille → colonne du suivi Frank */
+const CODE_TO_COLUMN = { A: 'astreintes', rj: 'repos_journalier', r: 'repos', C: 'conges' }
+
+/* Construit les lignes du suivi Frank à partir de la grille du récap */
+function buildFrankRows(drivers, grid, periodDays) {
+  return drivers.map((dr) => {
+    const e = grid[dr.id] || {}
+    const dd = e.days || {}
+    const buckets = { astreintes: [], repos_journalier: [], repos: [], conges: [] }
+    for (const dt of periodDays) {
+      const col = CODE_TO_COLUMN[dd[ymd(dt)]]
+      if (col) buckets[col].push(dt)
+    }
+    return {
+      nom: dr.nom,
+      astreintes: summarizeRuns(buckets.astreintes),
+      repos_journalier: summarizeRuns(buckets.repos_journalier),
+      repos: summarizeRuns(buckets.repos),
+      conges: summarizeRuns(buckets.conges),
+      info: e.annotation || '',
+    }
+  })
 }
 
 /* Couleur hexadécimale → [r, g, b] pour jsPDF */
@@ -272,24 +326,23 @@ function hexToRgb(hex) {
   return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null
 }
 
-/* HTML email — récapitulatif mensuel */
-function buildRecapEmailHtml({ monthLabel, responsable, drivers, grid, days, year, month }) {
+/* HTML email — récapitulatif mensuel (période 25→25) */
+function buildRecapEmailHtml({ monthLabel, responsable, drivers, grid, periodDays }) {
   const th = 'padding:4px 5px;border:1px solid #999;background:#2C6126;color:#fff;font-size:10px'
   const td = 'padding:4px 5px;border:1px solid #bbb;font-size:10px'
-  const wd = (d) => new Date(year, month - 1, d).getDay()
-  const wknd = (d) => wd(d) === 0 || wd(d) === 6
+  const wknd = (dt) => dt.getDay() === 0 || dt.getDay() === 6
   const head = `<tr><th style="${th};text-align:left">NOM</th>` +
-    days.map((d) =>
-      `<th style="${th}${wknd(d) ? ';background:#1F451B' : ''}">${WEEKDAY_LETTERS[wd(d)]}<br><span style="font-weight:400">${d}</span></th>`
+    periodDays.map((dt) =>
+      `<th style="${th}${wknd(dt) ? ';background:#1F451B' : ''}">${WEEKDAY_LETTERS[dt.getDay()]}<br><span style="font-weight:400">${dt.getDate()}</span></th>`
     ).join('') +
     `<th style="${th};text-align:left">Annotation</th></tr>`
   const body = drivers.map((dr) => {
     const e = grid[dr.id] || {}
     const dd = e.days || {}
     return `<tr><td style="${td};font-weight:600;white-space:nowrap">${esc(dr.nom)}</td>` +
-      days.map((d) => {
-        const v = dd[d] || ''
-        const bg = RECAP_BG[v] || (wknd(d) ? '#F4F3EE' : '#fff')
+      periodDays.map((dt) => {
+        const v = dd[ymd(dt)] || ''
+        const bg = RECAP_BG[v] || (wknd(dt) ? '#F4F3EE' : '#fff')
         return `<td style="${td};text-align:center;background:${bg}">${esc(v)}</td>`
       }).join('') +
       `<td style="${td}">${esc(e.annotation || '')}</td></tr>`
@@ -305,20 +358,19 @@ function buildRecapEmailHtml({ monthLabel, responsable, drivers, grid, days, yea
 }
 
 /* Génération PDF (un clic) — récapitulatif mensuel, format paysage */
-function generateRecapPdf({ monthLabel, responsable, drivers, grid, days, year, month, fileName }) {
+function generateRecapPdf({ monthLabel, responsable, drivers, grid, periodDays, fileName }) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
-  const wd = (d) => new Date(year, month - 1, d).getDay()
 
   doc.setFont('helvetica', 'bold'); doc.setFontSize(13)
   doc.text(`RÉCAPITULATIF MENSUEL — ${monthLabel.toUpperCase()}`, 8, 12)
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9)
   doc.text(`Montpellier Dépannage · Responsable : ${responsable || '—'}`, 8, 18)
 
-  const head = ['NOM', ...days.map((d) => `${WEEKDAY_LETTERS[wd(d)]}\n${d}`), 'Annotation']
+  const head = ['NOM', ...periodDays.map((dt) => `${WEEKDAY_LETTERS[dt.getDay()]}\n${dt.getDate()}`), 'Annotation']
   const body = drivers.map((dr) => {
     const e = grid[dr.id] || {}
     const dd = e.days || {}
-    return [dr.nom, ...days.map((d) => dd[d] || ''), e.annotation || '']
+    return [dr.nom, ...periodDays.map((dt) => dd[ymd(dt)] || ''), e.annotation || '']
   })
 
   autoTable(doc, {
@@ -331,19 +383,19 @@ function generateRecapPdf({ monthLabel, responsable, drivers, grid, days, year, 
     headStyles: { fillColor: [44, 97, 38], textColor: [255, 255, 255], fontSize: 6, halign: 'center' },
     columnStyles: {
       0: { halign: 'left', cellWidth: 22, fontStyle: 'bold' },
-      [days.length + 1]: { halign: 'left', cellWidth: 30 },
+      [periodDays.length + 1]: { halign: 'left', cellWidth: 30 },
     },
     didParseCell: (data) => {
       const col = data.column.index
-      const isDayCol = col > 0 && col <= days.length
+      const isDayCol = col > 0 && col <= periodDays.length
       if (data.section === 'head' && isDayCol) {
-        const w = wd(days[col - 1])
+        const w = periodDays[col - 1].getDay()
         if (w === 0 || w === 6) data.cell.styles.fillColor = [31, 69, 27]
       }
       if (data.section === 'body' && isDayCol) {
         const rgb = hexToRgb(RECAP_BG[data.cell.raw])
         if (rgb) data.cell.styles.fillColor = rgb
-        else if ([0, 6].includes(wd(days[col - 1]))) data.cell.styles.fillColor = [244, 243, 238]
+        else if ([0, 6].includes(periodDays[col - 1].getDay())) data.cell.styles.fillColor = [244, 243, 238]
       }
     },
   })
@@ -356,6 +408,53 @@ function generateRecapPdf({ monthLabel, responsable, drivers, grid, days, year, 
     RECAP_CODES.map((c) => `${c.code} = ${c.meaning}`).join('   ·   '),
     8, y + 5, { maxWidth: 281 }
   )
+  doc.save(fileName)
+}
+
+const FRANK_COLS = [
+  { key: 'astreintes', label: 'Jours astreintes' },
+  { key: 'repos_journalier', label: 'Jours repos journalier' },
+  { key: 'repos', label: 'Jours repos' },
+  { key: 'conges', label: 'Jours congés' },
+  { key: 'info', label: 'Informations supplémentaires' },
+]
+
+/* HTML email — suivi Frank (récapitulatif des astreintes) */
+function buildFrankEmailHtml({ monthLabel, periodLabel, rows }) {
+  const th = 'padding:7px 9px;border:1px solid #999;background:#2C6126;color:#fff;font-size:12px;text-align:left'
+  const td = 'padding:7px 9px;border:1px solid #bbb;font-size:12px;vertical-align:top'
+  const head = `<tr><th style="${th}">NOM</th>` +
+    FRANK_COLS.map((c) => `<th style="${th}">${c.label}</th>`).join('') + '</tr>'
+  const body = rows.map((r) =>
+    `<tr><td style="${td};font-weight:600;white-space:nowrap">${esc(r.nom)}</td>` +
+    FRANK_COLS.map((c) => `<td style="${td}">${esc(r[c.key] || '')}</td>`).join('') + '</tr>'
+  ).join('')
+  return `<div style="font-family:Arial,sans-serif;color:#1A190F">
+    <h2 style="margin:0 0 4px">Suivi Frank — Récapitulatif des astreintes</h2>
+    <p style="margin:0 0 12px;color:#555">${esc(monthLabel)} · ${esc(periodLabel)}</p>
+    <table style="border-collapse:collapse;max-width:900px">${head}${body}</table>
+  </div>`
+}
+
+/* Génération PDF (un clic) — suivi Frank, format portrait */
+function generateFrankPdf({ monthLabel, periodLabel, rows, fileName }) {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13)
+  doc.text('SUIVI FRANK — RÉCAPITULATIF DES ASTREINTES', 12, 14)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9)
+  doc.text(`${monthLabel} · ${periodLabel}`, 12, 20)
+
+  autoTable(doc, {
+    head: [['NOM', ...FRANK_COLS.map((c) => c.label)]],
+    body: rows.map((r) => [r.nom, ...FRANK_COLS.map((c) => r[c.key] || '')]),
+    startY: 24, margin: { left: 10, right: 10 },
+    styles: {
+      fontSize: 7.5, cellPadding: 1.6, valign: 'top',
+      lineColor: [180, 180, 180], lineWidth: 0.1, textColor: [26, 25, 15], overflow: 'linebreak',
+    },
+    headStyles: { fillColor: [44, 97, 38], textColor: [255, 255, 255], fontSize: 7.5 },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 24 } },
+  })
   doc.save(fileName)
 }
 
@@ -587,13 +686,15 @@ function FlotteApp({ user, onLogout, onUserChange }) {
   const goPresence = () => setView({ name: 'presence' })
   const goStats = () => setView({ name: 'stats' })
   const goRecap = () => setView({ name: 'recap' })
-  const active = ['presence', 'stats', 'recap'].includes(view.name) ? view.name : 'dashboard'
+  const goFrank = () => setView({ name: 'frank' })
+  const active = ['presence', 'stats', 'recap', 'frank'].includes(view.name) ? view.name : 'dashboard'
 
   const onNav = (n) =>
     n === 'presence' ? goPresence()
       : n === 'stats' ? goStats()
         : n === 'recap' ? goRecap()
-          : goDashboard()
+          : n === 'frank' ? goFrank()
+            : goDashboard()
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -620,6 +721,8 @@ function FlotteApp({ user, onLogout, onUserChange }) {
           <StatsPage categories={categories} vehicles={vehicles} />
         ) : view.name === 'recap' ? (
           <MonthlyRecap />
+        ) : view.name === 'frank' ? (
+          <FrankPage />
         ) : (
           <PresencePage />
         )}
@@ -660,6 +763,7 @@ function TopBar({ user, onLogout, onUserChange, active, onNav }) {
         {navBtn('stats', 'Indicateurs')}
         {navBtn('presence', 'Présence Pérols')}
         {navBtn('recap', 'Récapitulatif mensuel')}
+        {navBtn('frank', 'Suivi Frank')}
       </nav>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
         <span style={{ fontSize: 13.5, color: C.muted }}>
@@ -1849,13 +1953,13 @@ function MonthlyRecap() {
   const notify = useToast()
   const [anchor, setAnchor] = useState(() => firstOfMonth(new Date()))
   const monthKey = ym(anchor)
-  const year = anchor.getFullYear()
   const month = anchor.getMonth() + 1
-  const nDays = daysInMonth(year, month)
-  const days = useMemo(() => Array.from({ length: nDays }, (_, i) => i + 1), [nDays])
-  const monthLabel = `${MONTHS_FULL[month - 1]} ${year}`
-  const wd = useCallback((d) => new Date(year, month - 1, d).getDay(), [year, month])
-  const isWknd = (d) => wd(d) === 0 || wd(d) === 6
+  const monthLabel = `${MONTHS_FULL[month - 1]} ${anchor.getFullYear()}`
+  const periodDays = useMemo(() => recapPeriod(anchor), [anchor])
+  const periodLabel = periodDays.length
+    ? `du ${ddmm(periodDays[0])} au ${ddmm(periodDays[periodDays.length - 1])} ${periodDays[periodDays.length - 1].getFullYear()}`
+    : ''
+  const isWknd = (dt) => dt.getDay() === 0 || dt.getDay() === 6
 
   const [drivers, setDrivers] = useState([])
   const [responsable, setResponsable] = useState('')
@@ -1915,10 +2019,10 @@ function MonthlyRecap() {
     return () => clearTimeout(t)
   }, [responsable, grid, drivers, monthKey, loading, notify])
 
-  const setCell = (driverId, day, value) =>
+  const setCell = (driverId, isoDate, value) =>
     setGrid((g) => {
       const cur = g[driverId] || { days: {}, annotation: '' }
-      return { ...g, [driverId]: { ...cur, days: { ...cur.days, [day]: value } } }
+      return { ...g, [driverId]: { ...cur, days: { ...cur.days, [isoDate]: value } } }
     })
   const setAnnotation = (driverId, value) =>
     setGrid((g) => {
@@ -1937,7 +2041,7 @@ function MonthlyRecap() {
 
   const downloadPdf = () =>
     generateRecapPdf({
-      monthLabel, responsable, drivers, grid, days, year, month,
+      monthLabel, responsable, drivers, grid, periodDays,
       fileName: `recap_${monthKey}.pdf`,
     })
 
@@ -1948,7 +2052,7 @@ function MonthlyRecap() {
     try {
       await sendMail(
         `Récapitulatif mensuel — ${monthLabel}`,
-        buildRecapEmailHtml({ monthLabel, responsable, drivers, grid, days, year, month }),
+        buildRecapEmailHtml({ monthLabel, responsable, drivers, grid, periodDays }),
         dest
       )
       notify(`Récapitulatif envoyé à ${dest}`, 'success')
@@ -2003,6 +2107,7 @@ function MonthlyRecap() {
         <h1 style={{ fontFamily: FONT_HEAD, fontSize: 22, fontWeight: 700, textTransform: 'uppercase' }}>
           Récapitulatif mensuel — {monthLabel}
         </h1>
+        <p style={{ fontSize: 14, color: C.muted, marginTop: 2 }}>Période {periodLabel}</p>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '16px 0 14px', flexWrap: 'wrap' }}>
           <label style={{ ...S.label, marginBottom: 0 }}>Nom du responsable</label>
@@ -2028,13 +2133,13 @@ function MonthlyRecap() {
                   <th style={{
                     ...thBase, textAlign: 'left', minWidth: 130, position: 'sticky', left: 0, zIndex: 3,
                   }}>NOM</th>
-                  {days.map((d) => (
-                    <th key={d} style={{
+                  {periodDays.map((dt) => (
+                    <th key={ymd(dt)} style={{
                       ...thBase, minWidth: 30, padding: '6px 2px',
-                      background: isWknd(d) ? '#DCDAD0' : '#EDECE4',
+                      background: isWknd(dt) ? '#DCDAD0' : '#EDECE4',
                     }}>
-                      <div style={{ fontSize: 9.5, color: C.muted }}>{WEEKDAY_LETTERS[wd(d)]}</div>
-                      {d}
+                      <div style={{ fontSize: 9.5, color: C.muted }}>{WEEKDAY_LETTERS[dt.getDay()]}</div>
+                      {dt.getDate()}
                     </th>
                   ))}
                   <th style={{ ...thBase, textAlign: 'left', minWidth: 130 }}>Annotation</th>
@@ -2050,19 +2155,20 @@ function MonthlyRecap() {
                         ...tdBase, fontWeight: 600, position: 'sticky', left: 0, zIndex: 1,
                         background: C.panel,
                       }}>{dr.nom}</td>
-                      {days.map((d) => {
-                        const v = dd[d] || ''
+                      {periodDays.map((dt) => {
+                        const key = ymd(dt)
+                        const v = dd[key] || ''
                         return (
-                          <td key={d} style={{
+                          <td key={key} style={{
                             ...tdBase, padding: 2, textAlign: 'center',
-                            background: v ? undefined : (isWknd(d) ? '#F4F3EE' : undefined),
+                            background: v ? undefined : (isWknd(dt) ? '#F4F3EE' : undefined),
                           }}>
-                            <select value={v} onChange={(ev) => setCell(dr.id, d, ev.target.value)}
+                            <select value={v} onChange={(ev) => setCell(dr.id, key, ev.target.value)}
                               style={{
                                 width: '100%', padding: '5px 1px', borderRadius: 5, fontSize: 11.5,
                                 fontWeight: 600, border: `1px solid ${C.border}`,
                                 textAlign: 'center', textAlignLast: 'center',
-                                background: RECAP_BG[v] || (isWknd(d) ? '#F4F3EE' : '#fff'), color: C.ink,
+                                background: RECAP_BG[v] || (isWknd(dt) ? '#F4F3EE' : '#fff'), color: C.ink,
                               }}>
                               <option value="">—</option>
                               {RECAP_CODES.map((c) => (
@@ -2122,6 +2228,181 @@ function MonthlyRecap() {
       {sendConfirm && (
         <ConfirmDialog
           message={`Envoyer le récapitulatif de ${monthLabel} à ${mailTo.trim() || '(aucune adresse renseignée)'} ?`}
+          confirmLabel="Envoyer" onConfirm={send} onClose={() => setSendConfirm(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════
+   Suivi Frank — récapitulatif des astreintes (auto-rempli)
+   ════════════════════════════════════════════════════════════ */
+function FrankPage() {
+  const notify = useToast()
+  const [anchor, setAnchor] = useState(() => firstOfMonth(new Date()))
+  const monthKey = ym(anchor)
+  const month = anchor.getMonth() + 1
+  const monthLabel = `${MONTHS_FULL[month - 1]} ${anchor.getFullYear()}`
+  const periodDays = useMemo(() => recapPeriod(anchor), [anchor])
+  const periodLabel = periodDays.length
+    ? `du ${ddmm(periodDays[0])} au ${ddmm(periodDays[periodDays.length - 1])} ${periodDays[periodDays.length - 1].getFullYear()}`
+    : ''
+
+  const [drivers, setDrivers] = useState([])
+  const [grid, setGrid] = useState({})
+  const [mailTo, setMailTo] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [sendConfirm, setSendConfirm] = useState(false)
+  const [sending, setSending] = useState(false)
+
+  // Lecture seule : on relit la grille du récapitulatif pour la période
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+    Promise.all([
+      apiFetch('/presence/drivers'),
+      apiFetch('/recap/' + monthKey),
+      apiFetch('/frank-config'),
+    ])
+      .then(([drv, rec, cfg]) => {
+        if (!alive) return
+        setDrivers(drv)
+        setGrid(rec.entries || {})
+        setMailTo(cfg.mailTo || '')
+      })
+      .catch((err) => { if (alive) notify(err.message, 'error') })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [monthKey, notify])
+
+  const rows = useMemo(() => buildFrankRows(drivers, grid, periodDays), [drivers, grid, periodDays])
+
+  const saveMailTo = async () => {
+    try {
+      const d = await apiFetch('/frank-config', {
+        method: 'PUT', body: JSON.stringify({ mailTo: mailTo.trim() }),
+      })
+      setMailTo(d.mailTo)
+    } catch (err) { notify(err.message, 'error') }
+  }
+
+  const downloadPdf = () =>
+    generateFrankPdf({ monthLabel, periodLabel, rows, fileName: `suivi_frank_${monthKey}.pdf` })
+
+  const send = async () => {
+    const dest = mailTo.trim()
+    if (!dest) { notify('Renseignez d\'abord l\'adresse de Frank', 'error'); return }
+    setSending(true)
+    try {
+      await sendMail(
+        `Suivi Frank — ${monthLabel}`,
+        buildFrankEmailHtml({ monthLabel, periodLabel, rows }),
+        dest
+      )
+      notify(`Suivi envoyé à ${dest}`, 'success')
+    } catch (err) {
+      notify(err.message, 'error')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+      {/* Barre d'outils */}
+      <div className="no-print" style={{
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16,
+      }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button style={S.btn} onClick={() => setAnchor((a) => addMonths(a, -1))}>◀</button>
+          <button style={S.btn} onClick={() => setAnchor(firstOfMonth(new Date()))}>Ce mois</button>
+          <button style={S.btn} onClick={() => setAnchor((a) => addMonths(a, 1))}>▶</button>
+        </div>
+        <div style={{ flex: 1 }} />
+        <button style={S.btn} disabled={loading} onClick={downloadPdf}>⬇ Télécharger PDF</button>
+        <button style={{ ...S.btn, ...S.btnPrimary }} disabled={sending || loading}
+          onClick={() => setSendConfirm(true)}>
+          {sending ? 'Envoi…' : '✉ Envoyer à Frank'}
+        </button>
+      </div>
+
+      {/* Adresse de Frank */}
+      <div className="no-print" style={{
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16,
+        background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: '11px 14px',
+      }}>
+        <label style={{ ...S.label, marginBottom: 0 }}>Adresse e-mail de Frank</label>
+        <input type="email" value={mailTo} onChange={(e) => setMailTo(e.target.value)}
+          onBlur={saveMailTo} placeholder="frank@exemple.com"
+          style={{ ...S.input, maxWidth: 320, fontFamily: FONT_MONO }} />
+        <span style={{ fontSize: 12, color: C.muted }}>
+          Mémorisée · le bouton « Envoyer à Frank » l'utilise comme destinataire.
+        </span>
+      </div>
+
+      {/* Tableau */}
+      <div style={{
+        background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: '22px 24px',
+      }}>
+        <h1 style={{ fontFamily: FONT_HEAD, fontSize: 22, fontWeight: 700, textTransform: 'uppercase' }}>
+          Suivi Frank — {monthLabel}
+        </h1>
+        <p style={{ fontSize: 14, color: C.muted, marginTop: 2 }}>
+          Récapitulatif des astreintes · période {periodLabel}
+        </p>
+        <p style={{ fontSize: 12.5, color: C.muted, marginTop: 8 }}>
+          Rempli automatiquement à partir du <strong>Récapitulatif mensuel</strong>
+          {' '}(codes A · rj · r · C) et de sa colonne Annotation.
+        </p>
+
+        {loading ? (
+          <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>Chargement…</div>
+        ) : drivers.length === 0 ? (
+          <div style={{
+            padding: 36, textAlign: 'center', color: C.muted,
+            border: `1px dashed ${C.border}`, borderRadius: 10, marginTop: 14,
+          }}>
+            Aucun employé. Renseignez l'équipe depuis l'onglet Récapitulatif mensuel.
+          </div>
+        ) : (
+          <div className="tablewrap" style={{ overflowX: 'auto', marginTop: 14 }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 760, fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <th style={{ ...thBase, textAlign: 'left', minWidth: 110 }}>NOM</th>
+                  {FRANK_COLS.map((c) => (
+                    <th key={c.key} style={{ ...thBase, textAlign: 'left', minWidth: c.key === 'info' ? 220 : 150 }}>
+                      {c.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.nom} className="veh-row">
+                    <td style={{ ...tdBase, fontWeight: 600, verticalAlign: 'top' }}>{r.nom}</td>
+                    {FRANK_COLS.map((c) => (
+                      <td key={c.key} style={{
+                        ...tdBase, verticalAlign: 'top',
+                        fontFamily: c.key === 'info' ? 'inherit' : FONT_MONO,
+                        fontSize: c.key === 'info' ? 13 : 12.5,
+                        color: r[c.key] ? C.ink : C.muted,
+                      }}>
+                        {r[c.key] || '—'}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {sendConfirm && (
+        <ConfirmDialog
+          message={`Envoyer le suivi des astreintes de ${monthLabel} à ${mailTo.trim() || '(aucune adresse renseignée)'} ?`}
           confirmLabel="Envoyer" onConfirm={send} onClose={() => setSendConfirm(false)}
         />
       )}
