@@ -168,6 +168,9 @@ export async function initDB() {
       -- Échéance d'assurance et statut d'exploitation du véhicule
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS assurance_date TEXT NOT NULL DEFAULT '';
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS statut TEXT NOT NULL DEFAULT '';
+
+      -- Catégorie de l'employé : 'depanneur' | 'mecanicien' | 'chauffeur'
+      ALTER TABLE presence_drivers ADD COLUMN IF NOT EXISTS categorie TEXT NOT NULL DEFAULT 'depanneur';
     `);
 
     // ── Seed reference data on first run ──────────────────────
@@ -232,13 +235,26 @@ export async function initDB() {
     const { rowCount: driverRows } = await client.query("SELECT 1 FROM presence_drivers LIMIT 1");
     if (driverRows === 0) {
       const team = [
-        "BARAILLE", "CHIVAZ", "CADET", "CAMMAL", "FLACHERAR", "DUPONT",
-        "LARBI", "LAVENAIRE", "MACHURAT", "PEREZ", "RODRIGUEZ", "VIVIERS",
+        { nom: "MACHURAT",   categorie: "depanneur" },
+        { nom: "RODRIGUEZ",  categorie: "depanneur" },
+        { nom: "AVRAM",      categorie: "depanneur" },
+        { nom: "LAVENAIRE",  categorie: "depanneur" },
+        { nom: "CAMMAL",     categorie: "depanneur" },
+        { nom: "LARBI",      categorie: "depanneur" },
+        { nom: "CLIVAZ",     categorie: "depanneur" },
+        { nom: "FRACKOWIAK", categorie: "depanneur" },
+        { nom: "CADET",      categorie: "depanneur" },
+        { nom: "JOVIGNOT",   categorie: "depanneur" },
+        { nom: "BARAILLE",   categorie: "depanneur" },
+        { nom: "DUPONT",     categorie: "mecanicien" },
+        { nom: "PRIGENT",    categorie: "mecanicien" },
+        { nom: "PEREZ",      categorie: "chauffeur" },
+        { nom: "VIVIERS",    categorie: "chauffeur" },
       ];
       for (let i = 0; i < team.length; i++) {
         await client.query(
-          "INSERT INTO presence_drivers (nom, position) VALUES ($1,$2)",
-          [team[i], i + 1]
+          "INSERT INTO presence_drivers (nom, position, categorie) VALUES ($1,$2,$3)",
+          [team[i].nom, i + 1, team[i].categorie]
         );
       }
     }

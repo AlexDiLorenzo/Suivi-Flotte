@@ -84,6 +84,23 @@ const WEEKEND_DEFAULT = 'WE'
 const isWeekendDate = (dt) => dt.getDay() === 0 || dt.getDay() === 6
 const effectiveCode = (dt, raw) => raw || (isWeekendDate(dt) ? WEEKEND_DEFAULT : '')
 
+// Catégories d'employés — pilote l'affichage par section et le filtre Planning
+const CATEGORIES = [
+  { key: 'depanneur',  label: 'Dépanneur',  plural: 'Dépanneurs' },
+  { key: 'mecanicien', label: 'Mécanicien', plural: 'Mécaniciens' },
+  { key: 'chauffeur',  label: 'Chauffeur',  plural: 'Chauffeurs' },
+]
+const CATEGORY_KEYS = CATEGORIES.map((c) => c.key)
+const CATEGORY_LABEL = Object.fromEntries(CATEGORIES.map((c) => [c.key, c.plural]))
+const normCategory = (c) => (CATEGORY_KEYS.includes(c) ? c : 'depanneur')
+// Regroupe une liste de drivers par catégorie en respectant l'ordre CATEGORIES
+function groupByCategory(drivers) {
+  return CATEGORIES.map((cat) => ({
+    ...cat,
+    drivers: drivers.filter((d) => normCategory(d.categorie) === cat.key),
+  })).filter((g) => g.drivers.length > 0)
+}
+
 /* ════════════════════════════════════════════════════════════
    API
    ════════════════════════════════════════════════════════════ */
@@ -221,17 +238,22 @@ function esc(s) {
 function buildPresenceEmailHtml({ weekNum, range, responsable, drivers, grid, dayDates }) {
   const th = 'padding:6px 8px;border:1px solid #999;background:#2C6126;color:#fff;font-size:12px'
   const td = 'padding:6px 8px;border:1px solid #bbb;font-size:12px'
+  const sectionTd = 'padding:5px 8px;border:1px solid #bbb;background:#EDECE4;font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#666'
   const head = `<tr><th style="${th};text-align:left">NOM</th>` +
     DAYS.map((d, i) => `<th style="${th}">${d}<br><span style="font-weight:400">${ddmm(dayDates[i])}</span></th>`).join('') +
     '</tr>'
-  const body = drivers.map((dr) => {
-    const row = grid[dr.id] || {}
-    return `<tr><td style="${td};font-weight:600">${esc(dr.nom)}</td>` +
-      DAY_KEYS.map((k, i) => {
-        const v = effectiveCode(dayDates[i], row[k])
-        const bg = CODE_BG[v] || '#fff'
-        return `<td style="${td};text-align:center;background:${bg}">${esc(v)}</td>`
-      }).join('') + '</tr>'
+  const body = groupByCategory(drivers).map((g) => {
+    const section = `<tr><td style="${sectionTd}" colspan="${1 + DAY_KEYS.length}">${esc(g.plural)}</td></tr>`
+    const rows = g.drivers.map((dr) => {
+      const row = grid[dr.id] || {}
+      return `<tr><td style="${td};font-weight:600">${esc(dr.nom)}</td>` +
+        DAY_KEYS.map((k, i) => {
+          const v = effectiveCode(dayDates[i], row[k])
+          const bg = CODE_BG[v] || '#fff'
+          return `<td style="${td};text-align:center;background:${bg}">${esc(v)}</td>`
+        }).join('') + '</tr>'
+    }).join('')
+    return section + rows
   }).join('')
   const legend = PRESENCE_CODES.map((c) =>
     `<span style="display:inline-block;margin:2px 8px 2px 0"><b>${c.code}</b> = ${c.meaning}</span>`).join('')
@@ -331,6 +353,7 @@ function buildFrankRows(drivers, presence, annotations, periodDays) {
     }
     return {
       nom: dr.nom,
+      categorie: normCategory(dr.categorie),
       astreintes: summarizeRuns(buckets.astreintes),
       repos_journalier: summarizeRuns(buckets.repos_journalier),
       repos: summarizeRuns(buckets.repos),
@@ -338,6 +361,14 @@ function buildFrankRows(drivers, presence, annotations, periodDays) {
       info: annotations[dr.id] || '',
     }
   })
+}
+
+// Regroupe les lignes Frank par catégorie en respectant l'ordre CATEGORIES.
+function groupFrankRows(rows) {
+  return CATEGORIES.map((cat) => ({
+    ...cat,
+    rows: rows.filter((r) => normCategory(r.categorie) === cat.key),
+  })).filter((g) => g.rows.length > 0)
 }
 
 /* Couleur hexadécimale → [r, g, b] pour jsPDF */
@@ -357,14 +388,22 @@ function generateRecapPdf({ monthLabel, responsable, drivers, presence, annotati
   doc.text(`Montpellier Dépannage · Responsable : ${responsable || '—'}`, 8, 18)
 
   const head = ['NOM', ...periodDays.map((dt) => `${WEEKDAY_LETTERS[dt.getDay()]}\n${dt.getDate()}`), 'Annotation']
-  const body = drivers.map((dr) => {
-    const dayMap = presence[dr.id] || {}
-    return [
-      dr.nom,
-      ...periodDays.map((dt) => effectiveCode(dt, dayMap[ymd(dt)])),
-      annotations[dr.id] || '',
-    ]
-  })
+
+  const body = []
+  const rowMeta = []
+  for (const g of groupByCategory(drivers)) {
+    body.push([g.plural.toUpperCase(), ...periodDays.map(() => ''), ''])
+    rowMeta.push({ kind: 'section' })
+    for (const dr of g.drivers) {
+      const dayMap = presence[dr.id] || {}
+      body.push([
+        dr.nom,
+        ...periodDays.map((dt) => effectiveCode(dt, dayMap[ymd(dt)])),
+        annotations[dr.id] || '',
+      ])
+      rowMeta.push({ kind: 'driver' })
+    }
+  }
 
   autoTable(doc, {
     head: [head], body, startY: 22, margin: { left: 8, right: 8 },
@@ -385,9 +424,19 @@ function generateRecapPdf({ monthLabel, responsable, drivers, presence, annotati
         const w = periodDays[col - 1].getDay()
         if (w === 0 || w === 6) data.cell.styles.fillColor = [31, 69, 27]
       }
-      if (data.section === 'body' && isDayCol) {
-        const rgb = hexToRgb(CODE_BG[data.cell.raw])
-        if (rgb) data.cell.styles.fillColor = rgb
+      if (data.section === 'body') {
+        const meta = rowMeta[data.row.index]
+        if (meta && meta.kind === 'section') {
+          data.cell.styles.fillColor = [237, 236, 228]
+          data.cell.styles.fontStyle = 'bold'
+          data.cell.styles.textColor = [90, 90, 90]
+          data.cell.styles.halign = col === 0 ? 'left' : 'center'
+          return
+        }
+        if (isDayCol) {
+          const rgb = hexToRgb(CODE_BG[data.cell.raw])
+          if (rgb) data.cell.styles.fillColor = rgb
+        }
       }
     },
   })
@@ -415,12 +464,17 @@ const FRANK_COLS = [
 function buildFrankEmailHtml({ monthLabel, periodLabel, rows }) {
   const th = 'padding:7px 9px;border:1px solid #999;background:#2C6126;color:#fff;font-size:12px;text-align:left'
   const td = 'padding:7px 9px;border:1px solid #bbb;font-size:12px;vertical-align:top'
+  const sectionTd = 'padding:6px 9px;border:1px solid #bbb;background:#EDECE4;font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#666'
   const head = `<tr><th style="${th}">NOM</th>` +
     FRANK_COLS.map((c) => `<th style="${th}">${c.label}</th>`).join('') + '</tr>'
-  const body = rows.map((r) =>
-    `<tr><td style="${td};font-weight:600;white-space:nowrap">${esc(r.nom)}</td>` +
-    FRANK_COLS.map((c) => `<td style="${td}">${esc(r[c.key] || '')}</td>`).join('') + '</tr>'
-  ).join('')
+  const body = groupFrankRows(rows).map((g) => {
+    const section = `<tr><td style="${sectionTd}" colspan="${1 + FRANK_COLS.length}">${esc(g.plural)}</td></tr>`
+    const lines = g.rows.map((r) =>
+      `<tr><td style="${td};font-weight:600;white-space:nowrap">${esc(r.nom)}</td>` +
+      FRANK_COLS.map((c) => `<td style="${td}">${esc(r[c.key] || '')}</td>`).join('') + '</tr>'
+    ).join('')
+    return section + lines
+  }).join('')
   return `<div style="font-family:Arial,sans-serif;color:#1A190F">
     <h2 style="margin:0 0 4px">Suivi Frank — Récapitulatif des astreintes</h2>
     <p style="margin:0 0 12px;color:#555">${esc(monthLabel)} · ${esc(periodLabel)}</p>
@@ -436,9 +490,20 @@ function generateFrankPdf({ monthLabel, periodLabel, rows, fileName }) {
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9)
   doc.text(`${monthLabel} · ${periodLabel}`, 12, 20)
 
+  const body = []
+  const rowMeta = []
+  for (const g of groupFrankRows(rows)) {
+    body.push([g.plural.toUpperCase(), ...FRANK_COLS.map(() => '')])
+    rowMeta.push({ kind: 'section' })
+    for (const r of g.rows) {
+      body.push([r.nom, ...FRANK_COLS.map((c) => r[c.key] || '')])
+      rowMeta.push({ kind: 'driver' })
+    }
+  }
+
   autoTable(doc, {
     head: [['NOM', ...FRANK_COLS.map((c) => c.label)]],
-    body: rows.map((r) => [r.nom, ...FRANK_COLS.map((c) => r[c.key] || '')]),
+    body,
     startY: 24, margin: { left: 10, right: 10 },
     styles: {
       fontSize: 7.5, cellPadding: 1.6, valign: 'top',
@@ -446,6 +511,16 @@ function generateFrankPdf({ monthLabel, periodLabel, rows, fileName }) {
     },
     headStyles: { fillColor: [44, 97, 38], textColor: [255, 255, 255], fontSize: 7.5 },
     columnStyles: { 0: { fontStyle: 'bold', cellWidth: 24 } },
+    didParseCell: (data) => {
+      if (data.section !== 'body') return
+      const meta = rowMeta[data.row.index]
+      if (meta && meta.kind === 'section') {
+        data.cell.styles.fillColor = [237, 236, 228]
+        data.cell.styles.fontStyle = 'bold'
+        data.cell.styles.textColor = [90, 90, 90]
+        data.cell.styles.halign = data.column.index === 0 ? 'left' : 'center'
+      }
+    },
   })
   doc.save(fileName)
 }
@@ -461,23 +536,35 @@ function generatePlanningPdf({ weekNum, range, drivers, grid, special, dayDates,
   doc.setFont('helvetica', 'normal'); doc.setFontSize(11)
   doc.text(`Montpellier Dépannage · ${range}`, 10, 22)
 
-  const head = ['DÉPANNEUR', ...DAYS.map((d, i) => `${d}\n${ddmm(dayDates[i])}`)]
-  const specialRow = ['OPÉRATION SPÉCIALE', ...DAY_KEYS.map((k) => (special || {})[k] || '')]
-  const driverRows = drivers.map((dr) => {
-    const row = grid[dr.id] || {}
-    return [dr.nom, ...DAY_KEYS.map((k) => PLANNING_LABEL[row[k]] || '')]
-  })
-  const body = [...driverRows, specialRow] // ligne spéciale en dernier
-  const specialIndex = driverRows.length
+  const head = ['ÉQUIPE', ...DAYS.map((d, i) => `${d}\n${ddmm(dayDates[i])}`)]
+
+  // Body : en-tête de section par catégorie puis les lignes des employés.
+  // `rowMeta` aligne chaque ligne du body avec sa nature (section/driver/special)
+  // pour le coloriage dans didParseCell.
+  const body = []
+  const rowMeta = []
+  for (const g of groupByCategory(drivers)) {
+    body.push([g.plural.toUpperCase(), ...DAY_KEYS.map(() => '')])
+    rowMeta.push({ kind: 'section' })
+    for (const dr of g.drivers) {
+      const row = grid[dr.id] || {}
+      body.push([dr.nom, ...DAY_KEYS.map((k) => PLANNING_LABEL[row[k]] || '')])
+      rowMeta.push({ kind: 'driver', driver: dr })
+    }
+  }
+  body.push(['OPÉRATION SPÉCIALE', ...DAY_KEYS.map((k) => (special || {})[k] || '')])
+  rowMeta.push({ kind: 'special' })
+
   const flashy = hexToRgb(SPECIAL_BG)
+  const sectionFill = [237, 236, 228]
 
   // Dimensionnement dynamique pour TOUJOURS tenir sur une seule page :
-  // on répartit la hauteur disponible entre l'en-tête, la ligne spéciale
-  // et les dépanneurs, puis on adapte la police et les marges.
+  // on répartit la hauteur disponible entre l'en-tête et toutes les lignes
+  // (sections incluses), puis on adapte la police et les marges.
   const startY = 27
   const bottomReserve = 16 // place pour la légende + marge basse
   const pageH = doc.internal.pageSize.getHeight()
-  const rowCount = drivers.length + 2 // + en-tête + ligne opération spéciale
+  const rowCount = body.length + 1 // + en-tête de table
   const avail = pageH - startY - bottomReserve
   const rowH = Math.max(4.5, Math.min(13, avail / rowCount))
   const fontSize = Math.max(5.5, Math.min(11, rowH * 0.82))
@@ -498,9 +585,17 @@ function generatePlanningPdf({ weekNum, range, drivers, grid, special, dayDates,
     columnStyles: { 0: { halign: 'left', fontStyle: 'bold', cellWidth: 38 } },
     didParseCell: (data) => {
       if (data.section !== 'body') return
-      if (data.row.index === specialIndex) {
-        // Ligne « Opération spéciale » : police réduite (libellés longs),
-        // libellé en flashy, cases du jour en flashy si renseignées.
+      const meta = rowMeta[data.row.index]
+      if (!meta) return
+      if (meta.kind === 'section') {
+        data.cell.styles.fillColor = sectionFill
+        data.cell.styles.fontStyle = 'bold'
+        data.cell.styles.fontSize = Math.max(5, fontSize - 1)
+        data.cell.styles.textColor = [90, 90, 90]
+        data.cell.styles.halign = data.column.index === 0 ? 'left' : 'center'
+        return
+      }
+      if (meta.kind === 'special') {
         data.cell.styles.fontStyle = 'bold'
         data.cell.styles.fontSize = Math.max(5, fontSize - 1.5)
         if (data.column.index === 0 || data.cell.raw) {
@@ -509,9 +604,9 @@ function generatePlanningPdf({ weekNum, range, drivers, grid, special, dayDates,
         }
         return
       }
+      // kind === 'driver'
       if (data.column.index > 0) {
-        const dr = drivers[data.row.index]
-        const code = (grid[dr.id] || {})[DAY_KEYS[data.column.index - 1]]
+        const code = (grid[meta.driver.id] || {})[DAY_KEYS[data.column.index - 1]]
         const rgb = hexToRgb(PLANNING_BG[code])
         if (rgb) data.cell.styles.fillColor = rgb
       }
@@ -1911,29 +2006,40 @@ function PresencePage() {
                 </tr>
               </thead>
               <tbody>
-                {drivers.map((dr) => (
-                  <tr key={dr.id}>
-                    <td style={{ ...tdBase, fontWeight: 600 }}>{dr.nom}</td>
-                    {DAY_KEYS.map((k, i) => {
-                      const v = effectiveCode(dayDates[i], (grid[dr.id] || {})[k])
-                      return (
-                        <td key={k} style={{ ...tdBase, padding: 3, textAlign: 'center' }}>
-                          <select value={v} onChange={(e) => setCell(dr.id, k, e.target.value)}
-                            style={{
-                              width: '100%', padding: '6px 2px', borderRadius: 6, fontSize: 13,
-                              fontWeight: 600, border: `1px solid ${C.border}`,
-                              textAlign: 'center', textAlignLast: 'center',
-                              background: CODE_BG[v] || '#fff', color: C.ink,
-                            }}>
-                            <option value="">—</option>
-                            {PRESENCE_CODES.map((c) => (
-                              <option key={c.code} value={c.code}>{c.code}</option>
-                            ))}
-                          </select>
-                        </td>
-                      )
-                    })}
-                  </tr>
+                {groupByCategory(drivers).map((g) => (
+                  <React.Fragment key={g.key}>
+                    <tr>
+                      <td colSpan={1 + DAY_KEYS.length} style={{
+                        ...tdBase, background: '#EDECE4', fontWeight: 800, fontSize: 11.5,
+                        letterSpacing: 0.4, textTransform: 'uppercase', color: C.muted,
+                        padding: '6px 8px',
+                      }}>{g.plural}</td>
+                    </tr>
+                    {g.drivers.map((dr) => (
+                      <tr key={dr.id}>
+                        <td style={{ ...tdBase, fontWeight: 600 }}>{dr.nom}</td>
+                        {DAY_KEYS.map((k, i) => {
+                          const v = effectiveCode(dayDates[i], (grid[dr.id] || {})[k])
+                          return (
+                            <td key={k} style={{ ...tdBase, padding: 3, textAlign: 'center' }}>
+                              <select value={v} onChange={(e) => setCell(dr.id, k, e.target.value)}
+                                style={{
+                                  width: '100%', padding: '6px 2px', borderRadius: 6, fontSize: 13,
+                                  fontWeight: 600, border: `1px solid ${C.border}`,
+                                  textAlign: 'center', textAlignLast: 'center',
+                                  background: CODE_BG[v] || '#fff', color: C.ink,
+                                }}>
+                                <option value="">—</option>
+                                {PRESENCE_CODES.map((c) => (
+                                  <option key={c.code} value={c.code}>{c.code}</option>
+                                ))}
+                              </select>
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    ))}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>
@@ -1982,15 +2088,27 @@ function PresencePage() {
 
 function TeamModal({ drivers, onClose, onSaved }) {
   const notify = useToast()
-  const [list, setList] = useState(() => drivers.map((d) => ({ id: d.id, nom: d.nom })))
+  const [list, setList] = useState(() => drivers.map((d) => ({
+    id: d.id, nom: d.nom, categorie: normCategory(d.categorie),
+  })))
   const [busy, setBusy] = useState(false)
 
   const save = async () => {
-    const clean = list.filter((d) => d.nom.trim()).map((d) => ({ id: d.id, nom: d.nom.trim() }))
+    // Tri par catégorie (Dépanneur → Mécanicien → Chauffeur) tout en
+    // conservant l'ordre relatif au sein de chaque groupe : la position
+    // sauvegardée correspond à l'index dans le payload envoyé.
+    const grouped = []
+    for (const cat of CATEGORIES) {
+      for (const d of list) {
+        if (d.nom.trim() && normCategory(d.categorie) === cat.key) {
+          grouped.push({ id: d.id, nom: d.nom.trim(), categorie: cat.key })
+        }
+      }
+    }
     setBusy(true)
     try {
       const saved = await apiFetch('/presence/drivers', {
-        method: 'PUT', body: JSON.stringify(clean),
+        method: 'PUT', body: JSON.stringify(grouped),
       })
       onSaved(saved)
     } catch (err) {
@@ -2000,22 +2118,32 @@ function TeamModal({ drivers, onClose, onSaved }) {
   }
 
   return (
-    <Modal title="Équipe de Pérols" onClose={onClose} width={440}>
+    <Modal title="Équipe de Pérols" onClose={onClose} width={520}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <p style={{ fontSize: 13, color: C.muted, marginBottom: 4 }}>
-          Ajoutez, renommez ou retirez les chauffeurs de l'équipe.
+          Ajoutez, renommez ou retirez les membres de l'équipe. La catégorie
+          détermine l'affichage par section ; les <b>Chauffeurs</b> n'apparaissent
+          pas sur le Planning.
         </p>
         {list.map((d, i) => (
           <div key={i} style={{ display: 'flex', gap: 8 }}>
-            <input style={S.input} value={d.nom} placeholder="Nom du chauffeur"
+            <input style={{ ...S.input, flex: 1 }} value={d.nom} placeholder="Nom"
               onChange={(e) => setList((l) => l.map((x, j) =>
                 j === i ? { ...x, nom: e.target.value.toUpperCase() } : x))} />
+            <select value={d.categorie} style={{ ...S.input, width: 140 }}
+              onChange={(e) => setList((l) => l.map((x, j) =>
+                j === i ? { ...x, categorie: e.target.value } : x))}>
+              {CATEGORIES.map((c) => (
+                <option key={c.key} value={c.key}>{c.label}</option>
+              ))}
+            </select>
             <button style={{ ...S.btn, ...S.btnDanger, padding: '9px 13px' }}
               onClick={() => setList((l) => l.filter((_, j) => j !== i))}>×</button>
           </div>
         ))}
-        <button style={S.btn} onClick={() => setList((l) => [...l, { nom: '' }])}>
-          + Ajouter un chauffeur
+        <button style={S.btn}
+          onClick={() => setList((l) => [...l, { nom: '', categorie: 'depanneur' }])}>
+          + Ajouter un membre
         </button>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
           <button style={S.btn} onClick={onClose}>Annuler</button>
@@ -2179,35 +2307,46 @@ function MonthlyRecap() {
                 </tr>
               </thead>
               <tbody>
-                {drivers.map((dr) => {
-                  const dayMap = presence[dr.id] || {}
-                  return (
-                    <tr key={dr.id}>
-                      <td style={{
-                        ...tdBase, fontWeight: 600, position: 'sticky', left: 0, zIndex: 1,
-                        background: C.panel,
-                      }}>{dr.nom}</td>
-                      {periodDays.map((dt) => {
-                        const code = effectiveCode(dt, dayMap[ymd(dt)])
-                        return (
-                          <td key={ymd(dt)} style={{
-                            ...tdBase, padding: '5px 2px', textAlign: 'center',
-                            fontWeight: 600, fontSize: 11.5,
-                            background: CODE_BG[code] || '#fff',
-                          }}>
-                            {code || ''}
-                          </td>
-                        )
-                      })}
-                      <td style={{ ...tdBase, padding: 3 }}>
-                        <input value={annotations[dr.id] || ''}
-                          onChange={(ev) => setAnnotation(dr.id, ev.target.value)}
-                          placeholder="Informations supplémentaires…"
-                          style={{ ...inSm, fontSize: 12 }} />
-                      </td>
+                {groupByCategory(drivers).map((g) => (
+                  <React.Fragment key={g.key}>
+                    <tr>
+                      <td colSpan={2 + periodDays.length} style={{
+                        ...tdBase, background: '#EDECE4', fontWeight: 800, fontSize: 11.5,
+                        letterSpacing: 0.4, textTransform: 'uppercase', color: C.muted,
+                        padding: '6px 8px', position: 'sticky', left: 0, zIndex: 2,
+                      }}>{g.plural}</td>
                     </tr>
-                  )
-                })}
+                    {g.drivers.map((dr) => {
+                      const dayMap = presence[dr.id] || {}
+                      return (
+                        <tr key={dr.id}>
+                          <td style={{
+                            ...tdBase, fontWeight: 600, position: 'sticky', left: 0, zIndex: 1,
+                            background: C.panel,
+                          }}>{dr.nom}</td>
+                          {periodDays.map((dt) => {
+                            const code = effectiveCode(dt, dayMap[ymd(dt)])
+                            return (
+                              <td key={ymd(dt)} style={{
+                                ...tdBase, padding: '5px 2px', textAlign: 'center',
+                                fontWeight: 600, fontSize: 11.5,
+                                background: CODE_BG[code] || '#fff',
+                              }}>
+                                {code || ''}
+                              </td>
+                            )
+                          })}
+                          <td style={{ ...tdBase, padding: 3 }}>
+                            <input value={annotations[dr.id] || ''}
+                              onChange={(ev) => setAnnotation(dr.id, ev.target.value)}
+                              placeholder="Informations supplémentaires…"
+                              style={{ ...inSm, fontSize: 12 }} />
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </React.Fragment>
+                ))}
               </tbody>
             </table>
           </div>
@@ -2386,20 +2525,31 @@ function FrankPage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
-                  <tr key={r.nom} className="veh-row">
-                    <td style={{ ...tdBase, fontWeight: 600, verticalAlign: 'top' }}>{r.nom}</td>
-                    {FRANK_COLS.map((c) => (
-                      <td key={c.key} style={{
-                        ...tdBase, verticalAlign: 'top',
-                        fontFamily: c.key === 'info' ? 'inherit' : FONT_MONO,
-                        fontSize: c.key === 'info' ? 13 : 12.5,
-                        color: r[c.key] ? C.ink : C.muted,
-                      }}>
-                        {r[c.key] || '—'}
-                      </td>
+                {groupFrankRows(rows).map((g) => (
+                  <React.Fragment key={g.key}>
+                    <tr>
+                      <td colSpan={1 + FRANK_COLS.length} style={{
+                        ...tdBase, background: '#EDECE4', fontWeight: 800, fontSize: 11.5,
+                        letterSpacing: 0.4, textTransform: 'uppercase', color: C.muted,
+                        padding: '6px 8px',
+                      }}>{g.plural}</td>
+                    </tr>
+                    {g.rows.map((r) => (
+                      <tr key={r.nom} className="veh-row">
+                        <td style={{ ...tdBase, fontWeight: 600, verticalAlign: 'top' }}>{r.nom}</td>
+                        {FRANK_COLS.map((c) => (
+                          <td key={c.key} style={{
+                            ...tdBase, verticalAlign: 'top',
+                            fontFamily: c.key === 'info' ? 'inherit' : FONT_MONO,
+                            fontSize: c.key === 'info' ? 13 : 12.5,
+                            color: r[c.key] ? C.ink : C.muted,
+                          }}>
+                            {r[c.key] || '—'}
+                          </td>
+                        ))}
+                      </tr>
                     ))}
-                  </tr>
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>
@@ -2435,6 +2585,14 @@ function PlanningPage() {
   const [saveState, setSaveState] = useState('saved') // 'saving' | 'saved'
   const skipSave = useRef(true)
 
+  // Le planning n'inclut pas les chauffeurs (visibles uniquement sur la
+  // page Présence). On dérive la liste filtrée pour l'affichage et la
+  // sauvegarde — aucune entrée planning n'est jamais créée pour eux.
+  const planningDrivers = useMemo(
+    () => drivers.filter((d) => normCategory(d.categorie) !== 'chauffeur'),
+    [drivers]
+  )
+
   // Chargement de la semaine
   useEffect(() => {
     let alive = true
@@ -2464,7 +2622,7 @@ function PlanningPage() {
     const t = setTimeout(async () => {
       try {
         const entries = {}
-        for (const d of drivers) entries[d.id] = grid[d.id] || {}
+        for (const d of planningDrivers) entries[d.id] = grid[d.id] || {}
         await apiFetch('/planning/week/' + weekStart, {
           method: 'PUT',
           body: JSON.stringify({ entries, special }),
@@ -2475,29 +2633,29 @@ function PlanningPage() {
       }
     }, 700)
     return () => clearTimeout(t)
-  }, [grid, special, drivers, weekStart, loading, notify])
+  }, [grid, special, planningDrivers, weekStart, loading, notify])
 
   const setCell = (driverId, dayKey, value) =>
     setGrid((g) => ({ ...g, [driverId]: { ...(g[driverId] || {}), [dayKey]: value } }))
   const setSpecialCell = (dayKey, value) =>
     setSpecial((s) => ({ ...s, [dayKey]: value }))
 
-  // Jour férié : applique « F » à tous les dépanneurs pour ce jour
+  // Jour férié : applique « F » à tous les dépanneurs/mécaniciens pour ce jour
   // (bascule — re-cliquer efface le férié de la colonne).
   const dayIsFerie = (dayKey) =>
-    drivers.length > 0 && drivers.every((dr) => (grid[dr.id] || {})[dayKey] === 'F')
+    planningDrivers.length > 0 && planningDrivers.every((dr) => (grid[dr.id] || {})[dayKey] === 'F')
   const toggleFerie = (dayKey) =>
     setGrid((g) => {
-      const allFerie = drivers.length > 0 && drivers.every((dr) => (g[dr.id] || {})[dayKey] === 'F')
+      const allFerie = planningDrivers.length > 0 && planningDrivers.every((dr) => (g[dr.id] || {})[dayKey] === 'F')
       const next = { ...g }
-      for (const dr of drivers) {
+      for (const dr of planningDrivers) {
         next[dr.id] = { ...(next[dr.id] || {}), [dayKey]: allFerie ? '' : 'F' }
       }
       return next
     })
 
   const downloadPdf = () =>
-    generatePlanningPdf({ weekNum, range, drivers, grid, special, dayDates, fileName: `planning_S${weekNum}_${weekStart}.pdf` })
+    generatePlanningPdf({ weekNum, range, drivers: planningDrivers, grid, special, dayDates, fileName: `planning_S${weekNum}_${weekStart}.pdf` })
 
   return (
     <div style={{ maxWidth: 1320, margin: '0 auto' }}>
@@ -2530,19 +2688,19 @@ function PlanningPage() {
 
         {loading ? (
           <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>Chargement…</div>
-        ) : drivers.length === 0 ? (
+        ) : planningDrivers.length === 0 ? (
           <div style={{
             padding: 36, textAlign: 'center', color: C.muted,
             border: `1px dashed ${C.border}`, borderRadius: 10, marginTop: 14,
           }}>
-            Aucun dépanneur. L'équipe se gère depuis l'onglet « Présence Pérols ».
+            Aucun dépanneur ni mécanicien. L'équipe se gère depuis l'onglet « Présence Pérols ».
           </div>
         ) : (
           <div className="tablewrap" style={{ overflowX: 'auto', marginTop: 14 }}>
             <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 760, fontSize: 14 }}>
               <thead>
                 <tr>
-                  <th style={{ ...thBase, textAlign: 'left', minWidth: 150, fontSize: 13 }}>DÉPANNEUR</th>
+                  <th style={{ ...thBase, textAlign: 'left', minWidth: 150, fontSize: 13 }}>ÉQUIPE</th>
                   {DAYS.map((d, i) => {
                     const k = DAY_KEYS[i]
                     const wknd = i >= 5
@@ -2555,7 +2713,7 @@ function PlanningPage() {
                         {d}<br />
                         <span style={{ fontWeight: 400, fontSize: 11 }}>{ddmm(dayDates[i])}</span>
                         <div className="no-print" style={{ marginTop: 4 }}>
-                          <button onClick={() => toggleFerie(k)} disabled={drivers.length === 0}
+                          <button onClick={() => toggleFerie(k)} disabled={planningDrivers.length === 0}
                             title="Marquer ce jour férié pour tout le monde"
                             style={{
                               border: `1px solid ${ferie ? '#9A6B00' : C.border}`, borderRadius: 6,
@@ -2572,29 +2730,40 @@ function PlanningPage() {
                 </tr>
               </thead>
               <tbody>
-                {drivers.map((dr) => (
-                  <tr key={dr.id}>
-                    <td style={{ ...tdBase, fontWeight: 700, fontSize: 14 }}>{dr.nom}</td>
-                    {DAY_KEYS.map((k) => {
-                      const v = (grid[dr.id] || {})[k] || ''
-                      return (
-                        <td key={k} style={{ ...tdBase, padding: 4, textAlign: 'center' }}>
-                          <select value={v} onChange={(e) => setCell(dr.id, k, e.target.value)}
-                            style={{
-                              width: '100%', padding: '10px 4px', borderRadius: 7, fontSize: 13.5,
-                              fontWeight: 700, border: `1px solid ${C.border}`,
-                              textAlign: 'center', textAlignLast: 'center',
-                              background: PLANNING_BG[v] || '#fff', color: C.ink,
-                            }}>
-                            <option value="">—</option>
-                            {PLANNING_OPTIONS.map((o) => (
-                              <option key={o.code} value={o.code}>{o.label}</option>
-                            ))}
-                          </select>
-                        </td>
-                      )
-                    })}
-                  </tr>
+                {groupByCategory(planningDrivers).map((g) => (
+                  <React.Fragment key={g.key}>
+                    <tr>
+                      <td colSpan={1 + DAY_KEYS.length} style={{
+                        ...tdBase, background: '#EDECE4', fontWeight: 800, fontSize: 11.5,
+                        letterSpacing: 0.4, textTransform: 'uppercase', color: C.muted,
+                        padding: '6px 8px',
+                      }}>{g.plural}</td>
+                    </tr>
+                    {g.drivers.map((dr) => (
+                      <tr key={dr.id}>
+                        <td style={{ ...tdBase, fontWeight: 700, fontSize: 14 }}>{dr.nom}</td>
+                        {DAY_KEYS.map((k) => {
+                          const v = (grid[dr.id] || {})[k] || ''
+                          return (
+                            <td key={k} style={{ ...tdBase, padding: 4, textAlign: 'center' }}>
+                              <select value={v} onChange={(e) => setCell(dr.id, k, e.target.value)}
+                                style={{
+                                  width: '100%', padding: '10px 4px', borderRadius: 7, fontSize: 13.5,
+                                  fontWeight: 700, border: `1px solid ${C.border}`,
+                                  textAlign: 'center', textAlignLast: 'center',
+                                  background: PLANNING_BG[v] || '#fff', color: C.ink,
+                                }}>
+                                <option value="">—</option>
+                                {PLANNING_OPTIONS.map((o) => (
+                                  <option key={o.code} value={o.code}>{o.label}</option>
+                                ))}
+                              </select>
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    ))}
+                  </React.Fragment>
                 ))}
                 {/* Dernière ligne — Opération spéciale : texte libre par jour,
                     flashy si rempli, police réduite pour les libellés longs */}

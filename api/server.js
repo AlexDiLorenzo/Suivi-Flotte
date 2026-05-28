@@ -302,19 +302,21 @@ app.put("/api/presence/drivers", wrap(async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const ALLOWED_CAT = new Set(["depanneur", "mecanicien", "chauffeur"]);
     const keep = [];
     for (let i = 0; i < drivers.length; i++) {
       const d = drivers[i];
+      const cat = ALLOWED_CAT.has(d.categorie) ? d.categorie : "depanneur";
       if (d.id) {
         await client.query(
-          "UPDATE presence_drivers SET nom=$1, position=$2 WHERE id=$3",
-          [d.nom || "", i + 1, d.id]
+          "UPDATE presence_drivers SET nom=$1, position=$2, categorie=$3 WHERE id=$4",
+          [d.nom || "", i + 1, cat, d.id]
         );
         keep.push(Number(d.id));
       } else {
         const { rows } = await client.query(
-          "INSERT INTO presence_drivers (nom, position) VALUES ($1,$2) RETURNING id",
-          [d.nom || "", i + 1]
+          "INSERT INTO presence_drivers (nom, position, categorie) VALUES ($1,$2,$3) RETURNING id",
+          [d.nom || "", i + 1, cat]
         );
         keep.push(rows[0].id);
       }
