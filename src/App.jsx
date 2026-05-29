@@ -184,6 +184,50 @@ function isoWeek(d) {
   return 1 + Math.round((x - firstThu) / (7 * 864e5))
 }
 
+/* Jours fériés français (11 par an). Pâques via l'algorithme de Meeus/Gauss ;
+   les fêtes mobiles (lundi de Pâques, Ascension, lundi de Pentecôte) en
+   découlent. Mémoïsé par année. */
+function easterSunday(year) {
+  const a = year % 19
+  const b = Math.floor(year / 100)
+  const c = year % 100
+  const d = Math.floor(b / 4)
+  const e = b % 4
+  const f = Math.floor((b + 8) / 25)
+  const g = Math.floor((b - f + 1) / 3)
+  const h = (19 * a + b - d - g + 15) % 30
+  const i = Math.floor(c / 4)
+  const k = c % 4
+  const l = (32 + 2 * e + 2 * i - h - k) % 7
+  const m = Math.floor((a + 11 * h + 22 * l) / 451)
+  const month = Math.floor((h + l - 7 * m + 114) / 31) // 3 = mars, 4 = avril
+  const day = ((h + l - 7 * m + 114) % 31) + 1
+  return new Date(year, month - 1, day, 12)
+}
+const _holidayCache = {}
+function frenchHolidays(year) {
+  if (_holidayCache[year]) return _holidayCache[year]
+  const easter = easterSunday(year)
+  const set = new Set([
+    `${year}-01-01`,          // Jour de l'An
+    `${year}-05-01`,          // Fête du Travail
+    `${year}-05-08`,          // Victoire 1945
+    `${year}-07-14`,          // Fête nationale
+    `${year}-08-15`,          // Assomption
+    `${year}-11-01`,          // Toussaint
+    `${year}-11-11`,          // Armistice 1918
+    `${year}-12-25`,          // Noël
+    ymd(addDays(easter, 1)),  // Lundi de Pâques
+    ymd(addDays(easter, 39)), // Ascension
+    ymd(addDays(easter, 50)), // Lundi de Pentecôte
+  ])
+  _holidayCache[year] = set
+  return set
+}
+const isFrenchHoliday = (dt) => frenchHolidays(dt.getFullYear()).has(ymd(dt))
+// Code planning effectif : un jour férié vide est pré-rempli « F »
+const effectivePlanningCode = (dt, raw) => raw || (isFrenchHoliday(dt) ? 'F' : '')
+
 /* Indicateurs — calculs d'âge et d'échéance CT */
 function startOfToday() {
   const d = new Date()
@@ -548,7 +592,7 @@ function generatePlanningPdf({ weekNum, range, drivers, grid, special, dayDates,
     rowMeta.push({ kind: 'section' })
     for (const dr of g.drivers) {
       const row = grid[dr.id] || {}
-      body.push([dr.nom, ...DAY_KEYS.map((k) => PLANNING_LABEL[row[k]] || '')])
+      body.push([dr.nom, ...DAY_KEYS.map((k, i) => PLANNING_LABEL[effectivePlanningCode(dayDates[i], row[k])] || '')])
       rowMeta.push({ kind: 'driver', driver: dr })
     }
   }
@@ -606,7 +650,8 @@ function generatePlanningPdf({ weekNum, range, drivers, grid, special, dayDates,
       }
       // kind === 'driver'
       if (data.column.index > 0) {
-        const code = (grid[meta.driver.id] || {})[DAY_KEYS[data.column.index - 1]]
+        const ci = data.column.index - 1
+        const code = effectivePlanningCode(dayDates[ci], (grid[meta.driver.id] || {})[DAY_KEYS[ci]])
         const rgb = hexToRgb(PLANNING_BG[code])
         if (rgb) data.cell.styles.fillColor = rgb
       }
@@ -2640,20 +2685,6 @@ function PlanningPage() {
   const setSpecialCell = (dayKey, value) =>
     setSpecial((s) => ({ ...s, [dayKey]: value }))
 
-  // Jour férié : applique « F » à tous les dépanneurs/mécaniciens pour ce jour
-  // (bascule — re-cliquer efface le férié de la colonne).
-  const dayIsFerie = (dayKey) =>
-    planningDrivers.length > 0 && planningDrivers.every((dr) => (grid[dr.id] || {})[dayKey] === 'F')
-  const toggleFerie = (dayKey) =>
-    setGrid((g) => {
-      const allFerie = planningDrivers.length > 0 && planningDrivers.every((dr) => (g[dr.id] || {})[dayKey] === 'F')
-      const next = { ...g }
-      for (const dr of planningDrivers) {
-        next[dr.id] = { ...(next[dr.id] || {}), [dayKey]: allFerie ? '' : 'F' }
-      }
-      return next
-    })
-
   const downloadPdf = () =>
     generatePlanningPdf({ weekNum, range, drivers: planningDrivers, grid, special, dayDates, fileName: `planning_S${weekNum}_${weekStart}.pdf` })
 
@@ -2702,9 +2733,8 @@ function PlanningPage() {
                 <tr>
                   <th style={{ ...thBase, textAlign: 'left', minWidth: 150, fontSize: 13 }}>ÉQUIPE</th>
                   {DAYS.map((d, i) => {
-                    const k = DAY_KEYS[i]
                     const wknd = i >= 5
-                    const ferie = dayIsFerie(k)
+                    const ferie = isFrenchHoliday(dayDates[i])
                     return (
                       <th key={d} style={{
                         ...thBase, minWidth: 110, fontSize: 13,
@@ -2712,18 +2742,9 @@ function PlanningPage() {
                       }}>
                         {d}<br />
                         <span style={{ fontWeight: 400, fontSize: 11 }}>{ddmm(dayDates[i])}</span>
-                        <div className="no-print" style={{ marginTop: 4 }}>
-                          <button onClick={() => toggleFerie(k)} disabled={planningDrivers.length === 0}
-                            title="Marquer ce jour férié pour tout le monde"
-                            style={{
-                              border: `1px solid ${ferie ? '#9A6B00' : C.border}`, borderRadius: 6,
-                              padding: '2px 7px', fontSize: 10.5, fontWeight: 700,
-                              background: ferie ? '#F2D2A9' : C.panel,
-                              color: ferie ? '#5A3E00' : C.muted,
-                            }}>
-                            {ferie ? '✓ Férié' : 'Férié'}
-                          </button>
-                        </div>
+                        {ferie && (
+                          <div style={{ fontWeight: 700, fontSize: 10, color: '#5A3E00' }}>Férié</div>
+                        )}
                       </th>
                     )
                   })}
@@ -2742,8 +2763,8 @@ function PlanningPage() {
                     {g.drivers.map((dr) => (
                       <tr key={dr.id}>
                         <td style={{ ...tdBase, fontWeight: 700, fontSize: 14 }}>{dr.nom}</td>
-                        {DAY_KEYS.map((k) => {
-                          const v = (grid[dr.id] || {})[k] || ''
+                        {DAY_KEYS.map((k, i) => {
+                          const v = effectivePlanningCode(dayDates[i], (grid[dr.id] || {})[k])
                           return (
                             <td key={k} style={{ ...tdBase, padding: 4, textAlign: 'center' }}>
                               <select value={v} onChange={(e) => setCell(dr.id, k, e.target.value)}
@@ -3007,19 +3028,6 @@ function StatsPage({ categories, vehicles }) {
     return arr
   }, [vehicles])
 
-  /* ── Échéances assurance ── */
-  const assuranceUpcoming = useMemo(() => {
-    const out = []
-    for (const v of vehicles) {
-      const info = ctInfo(v.assurance_date)
-      if (info && info.days <= 60) out.push({ v, ...info })
-    }
-    return out.sort((a, b) => a.days - b.days)
-  }, [vehicles])
-
-  const assuranceMissing = useMemo(
-    () => vehicles.filter((v) => !v.assurance_date), [vehicles])
-
   /* ── Statut du parc ── */
   const { activeCount, statutKnown } = useMemo(() => {
     let active = 0, known = 0
@@ -3062,7 +3070,6 @@ function StatsPage({ categories, vehicles }) {
       { label: 'Immatriculation', ...rate((v) => (v.immatriculation || '').trim()) },
       { label: '1ère mise en circulation', ...rate((v) => ageYears(v.date_mec) != null) },
       { label: 'Date de contrôle technique', ...rate((v) => v.ct_date) },
-      { label: "Échéance d'assurance", ...rate((v) => v.assurance_date) },
       { label: 'Statut du véhicule', ...rate((v) => v.statut) },
       { label: 'Numéro de série', ...rate((v) => (v.numero_serie || '').trim()) },
     ]
@@ -3169,8 +3176,6 @@ function StatsPage({ categories, vehicles }) {
           tone={statutKnown ? undefined : 'warn'} />
         <Kpi label="CT sous 60 jours" value={ctUpcoming.length}
           tone={ctUpcoming.length ? 'warn' : 'ok'} />
-        <Kpi label="Assurances sous 60 jours" value={assuranceUpcoming.length}
-          tone={assuranceUpcoming.length ? 'warn' : 'ok'} />
         {dataReady && (
           <Kpi label={'Coût maintenance ' + CURRENT_YEAR} value={fmtMoney(yearCost)} mono />
         )}
@@ -3239,58 +3244,6 @@ function StatsPage({ categories, vehicles }) {
                 ? `⚠ ${ctMissing.length} véhicule(s) sans mois de CT renseigné`
                 : 'Tous les véhicules ont un mois de CT renseigné.'}
             </div>
-          </div>
-        </div>
-      </StatPanel>
-
-      {/* Échéances d'assurance */}
-      <StatPanel title="Échéances d'assurance">
-        <div style={col2}>
-          <div>
-            <div style={statSubTitle}>Assurances à renouveler sous 60 jours</div>
-            {assuranceUpcoming.length === 0 ? (
-              <div style={statEmpty}>Aucune échéance d'assurance dans les 60 jours.</div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {assuranceUpcoming.map(({ v, date, days }) => {
-                  const tone = ctTone(days)
-                  return (
-                    <div key={v.id} style={{
-                      display: 'flex', alignItems: 'center', gap: 10,
-                      padding: '7px 10px', background: C.bg, borderRadius: 8,
-                    }}>
-                      <span style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 13 }}>
-                        {v.immatriculation || '—'}
-                      </span>
-                      <span style={{
-                        flex: 1, fontSize: 12, color: C.muted, whiteSpace: 'nowrap',
-                        overflow: 'hidden', textOverflow: 'ellipsis',
-                      }}>
-                        {[v.marque, v.modele].filter(Boolean).join(' ')}
-                      </span>
-                      <span style={{ fontFamily: FONT_MONO, fontSize: 12.5 }}>{ddmm(date)}</span>
-                      <span style={{
-                        fontFamily: FONT_MONO, fontWeight: 700, fontSize: 11, color: '#fff',
-                        padding: '2px 7px', borderRadius: 20, background: tone.color,
-                      }}>{tone.label}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-          <div>
-            <div style={statSubTitle}>État du suivi</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <MiniStat label="À renouveler sous 60 jours" value={assuranceUpcoming.length} />
-              <MiniStat label="Sans échéance renseignée"
-                value={`${assuranceMissing.length} / ${vehicles.length}`} />
-            </div>
-            {assuranceMissing.length > 0 && (
-              <div style={{ marginTop: 12, fontSize: 12.5, color: C.red }}>
-                ⚠ {assuranceMissing.length} véhicule(s) sans date d'assurance renseignée
-              </div>
-            )}
           </div>
         </div>
       </StatPanel>

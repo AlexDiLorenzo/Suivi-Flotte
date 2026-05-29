@@ -49,8 +49,13 @@ sheet, the weekly planning, the monthly recap and the Frank on-call summary).
   **last row** of the table: a **free-text** input per day (smaller font for long
   labels), highlighted in flashy pink (`SPECIAL_BG` `#FF3DA5`) when filled — stored
   in its own `planning_special` table (1 row/week, `lun…dim`), not a per-driver code.
-  Each day-column header has a **Férié** toggle (`toggleFerie`) that sets/clears
-  `F` for the whole column (everyone) at once. Same weekly `mondayOf`/auto-save
+  The **11 French public holidays** are **pre-filled** automatically: a holiday
+  day with an empty cell is shown/exported as `F` via `effectivePlanningCode`
+  (a display default like the weekend `WE`, not persisted — selecting another
+  code overrides it). Holidays are computed by `frenchHolidays(year)`
+  (`easterSunday` Meeus/Gauss + the 8 fixed dates), cached per year; the header
+  shows a "Férié" label on those columns. (There is **no** manual Férié toggle
+  button anymore.) Same weekly `mondayOf`/auto-save
   (700 ms, `skipSave`) pattern as `PresencePage`; `GET/PUT
   /api/planning/week/:weekStart` carries both `entries` (driver grid) and
   `special` (the ops row). Single action: **Télécharger PDF**
@@ -96,7 +101,7 @@ everywhere without being persisted — pick `AS` (or any code) to override.
   (per-intervention cost rows + cost-by-part-type) and crosses it with the
   already-loaded `categories`/`vehicles`. Sections: a red alert banner for
   vehicles with no CT date, a KPI band, a **Qualité des données** completeness
-  panel, CT & insurance due-date panels, a per-category vehicle breakdown, a
+  panel, a CT due-date panel, a per-category vehicle breakdown, a
   per-category **age pyramid** (`AgeStack`, buckets `<5/5-10/10-15/+15`). The
   maintenance-cost and workshop-activity sections only render once
   `MIN_TRACKED` vehicles have an intervention history — otherwise a "Modules en
