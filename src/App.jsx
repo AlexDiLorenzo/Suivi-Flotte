@@ -807,6 +807,10 @@ function LoginScreen({ onAuth }) {
 
   const submit = async (e) => {
     e.preventDefault()
+    if (mode === 'setup' && password.length < 12) {
+      setError('Le mot de passe doit comporter au moins 12 caractères.')
+      return
+    }
     setError(''); setBusy(true)
     try {
       const d = await apiFetch(`/auth/${mode === 'setup' ? 'setup' : 'login'}`, {
@@ -852,6 +856,11 @@ function LoginScreen({ onAuth }) {
           <Field label="Mot de passe">
             <input style={S.input} type="password" value={password}
               onChange={(e) => setPassword(e.target.value)} />
+            {mode === 'setup' && (
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
+                12 caractères minimum.
+              </div>
+            )}
           </Field>
           {error && <div style={{ color: C.red, fontSize: 13, fontWeight: 600 }}>{error}</div>}
           <button type="submit" disabled={busy || !mode}
@@ -1017,6 +1026,9 @@ function AccountModal({ user, onClose, onSaved }) {
   const save = async (e) => {
     e.preventDefault()
     if (!currentPassword) { notify('Saisissez votre mot de passe actuel', 'error'); return }
+    if (newPassword && newPassword.length < 12) {
+      notify('Le nouveau mot de passe doit comporter au moins 12 caractères', 'error'); return
+    }
     if (newPassword && newPassword !== confirmPassword) {
       notify('Les deux mots de passe ne correspondent pas', 'error'); return
     }
@@ -2486,6 +2498,11 @@ function FrankPage() {
     if (!dest) { notify('Renseignez d\'abord l\'adresse de Frank', 'error'); return }
     setSending(true)
     try {
+      // On enregistre l'adresse avant l'envoi : le serveur n'autorise que
+      // les destinataires persistés dans les réglages.
+      await apiFetch('/frank-config', {
+        method: 'PUT', body: JSON.stringify({ mailTo: dest }),
+      })
       await sendMail(
         `Suivi Frank — ${monthLabel}`,
         buildFrankEmailHtml({ monthLabel, periodLabel, rows }),

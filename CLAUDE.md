@@ -133,7 +133,13 @@ everywhere without being persisted — pick `AS` (or any code) to override.
 ### Backend (`api/`)
 
 - **Express + pg** REST API on port 3000, `wrap()` funnels async errors.
-- **JWT auth** — 30-day tokens, bcrypt hashing.
+- **JWT auth** — 30-day tokens, bcrypt hashing. `JWT_SECRET` is **mandatory**:
+  the server refuses to boot (`process.exit(1)`) if it is missing or under 32
+  chars (no insecure default). Passwords are **12 chars minimum** (setup,
+  login, credentials). The auth routes (`/auth/login`, `/auth/setup`,
+  `/auth/credentials`) are protected by an **in-memory per-IP rate limiter**
+  (`loginRateLimit`, 15 attempts / 15 min, 429 on excess); `app.set('trust
+  proxy', true)` + nginx `X-Forwarded-For` give the real client IP.
 - **`initDB()`** (`api/db.js`) creates tables (idempotent `CREATE TABLE IF NOT
   EXISTS`) and, on an empty DB, seeds the fleet from `api/seedData.js`. The
   default Pérols team is seeded by a **separate, independent block** gated on an
@@ -184,9 +190,14 @@ everywhere without being persisted — pick `AS` (or any code) to override.
     recap tab no longer emails); kept in case sending is re-added
   - `GET/PUT /api/frank-config` — persisted Frank destination email
     (`app_settings.frank_mail_to`). Both configs share `getSetting`/`setSetting`
-  - `POST /api/send-mail` — emails an HTML table via Resend. Sends to the
-    optional `to` field if it is a valid address (used by the monthly recap),
-    otherwise to `MAIL_TO` (default `compta@montpellierdepannage.com`)
+  - `POST /api/send-mail` — emails an HTML table via Resend. The recipient is
+    **never** a free-form client address (the Resend domain is verified —
+    that would allow spoofing the company). The client `to` is accepted **only
+    if it matches a server-side allowlist**: `MAIL_TO` (default
+    `compta@montpellierdepannage.com`) + the persisted `frank_mail_to` /
+    `recap_mail_to` settings; otherwise 403. Empty `to` → `MAIL_TO`. The Frank
+    tab therefore **PUTs `/frank-config` right before sending** so the address
+    is allowlisted. HTML is capped at 200 kB.
 
 ### Print & email
 

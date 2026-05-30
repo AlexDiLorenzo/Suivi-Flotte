@@ -6,10 +6,47 @@ import pool, { initDB } from "./db.js";
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000");
-const JWT_SECRET = process.env.JWT_SECRET || "change-me-in-production";
+
+// Le secret JWT doit être fourni et solide : sans lui, n'importe qui pourrait
+// forger des tokens valides. On refuse de démarrer plutôt que de retomber
+// silencieusement sur une valeur par défaut connue.
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+  console.error("JWT_SECRET manquant ou trop court (32 caractères minimum requis).");
+  process.exit(1);
+}
+
+// Derrière Traefik + nginx : indispensable pour que req.ip reflète l'IP du
+// client (et non celle du proxy) — utilisé par la limitation anti-brute-force.
+app.set("trust proxy", true);
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
 app.use(express.json({ limit: "2mb" }));
+
+// ── Limitation anti-brute-force (en mémoire, par IP) ─────────
+// Plafonne les tentatives répétées sur les routes d'authentification.
+const RL_WINDOW_MS = 15 * 60 * 1000; // fenêtre glissante de 15 minutes
+const RL_MAX = 15;                    // tentatives autorisées par IP et par fenêtre
+const authHits = new Map();           // ip -> { count, resetAt }
+function loginRateLimit(req, res, next) {
+  const ip = req.ip || req.socket?.remoteAddress || "unknown";
+  const now = Date.now();
+  const rec = authHits.get(ip);
+  if (!rec || now > rec.resetAt) {
+    authHits.set(ip, { count: 1, resetAt: now + RL_WINDOW_MS });
+    return next();
+  }
+  if (++rec.count > RL_MAX) {
+    res.set("Retry-After", String(Math.ceil((rec.resetAt - now) / 1000)));
+    return res.status(429).json({ error: "Trop de tentatives. Réessayez dans quelques minutes." });
+  }
+  next();
+}
+// Purge périodique des entrées expirées
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of authHits) if (now > rec.resetAt) authHits.delete(ip);
+}, RL_WINDOW_MS).unref();
 
 // ── Auth middleware ──────────────────────────────────────────
 function auth(req, res, next) {
@@ -32,12 +69,12 @@ app.get("/api/auth/check", wrap(async (_req, res) => {
   res.json({ hasUsers: rowCount > 0 });
 }));
 
-app.post("/api/auth/setup", wrap(async (req, res) => {
+app.post("/api/auth/setup", loginRateLimit, wrap(async (req, res) => {
   const { rowCount } = await pool.query("SELECT 1 FROM users LIMIT 1");
   if (rowCount > 0) return res.status(403).json({ error: "Compte déjà configuré" });
   const { username, password } = req.body;
-  if (!username || !password || password.length < 4) {
-    return res.status(400).json({ error: "Identifiant et mot de passe (min. 4 caractères) requis" });
+  if (!username || !password || password.length < 12) {
+    return res.status(400).json({ error: "Identifiant et mot de passe (min. 12 caractères) requis" });
   }
   const hash = await bcrypt.hash(password, 10);
   await pool.query("INSERT INTO users (username, password_hash) VALUES ($1,$2)", [username, hash]);
@@ -45,7 +82,7 @@ app.post("/api/auth/setup", wrap(async (req, res) => {
   res.json({ token, username });
 }));
 
-app.post("/api/auth/login", wrap(async (req, res) => {
+app.post("/api/auth/login", loginRateLimit, wrap(async (req, res) => {
   const { username, password } = req.body;
   const { rows } = await pool.query("SELECT * FROM users WHERE username=$1", [username]);
   if (!rows.length) return res.status(401).json({ error: "Identifiants invalides" });
@@ -56,7 +93,7 @@ app.post("/api/auth/login", wrap(async (req, res) => {
 }));
 
 // Modification de l'identifiant et/ou du mot de passe du compte connecté
-app.put("/api/auth/credentials", auth, wrap(async (req, res) => {
+app.put("/api/auth/credentials", loginRateLimit, auth, wrap(async (req, res) => {
   const { currentPassword, newUsername, newPassword } = req.body;
   const { rows } = await pool.query("SELECT * FROM users WHERE username=$1", [req.user.username]);
   if (!rows.length) return res.status(404).json({ error: "Compte introuvable" });
@@ -64,8 +101,8 @@ app.put("/api/auth/credentials", auth, wrap(async (req, res) => {
   if (!ok) return res.status(401).json({ error: "Mot de passe actuel incorrect" });
   const username = (newUsername || rows[0].username).trim();
   if (!username) return res.status(400).json({ error: "Identifiant requis" });
-  if (newPassword && newPassword.length < 4) {
-    return res.status(400).json({ error: "Nouveau mot de passe : 4 caractères minimum" });
+  if (newPassword && newPassword.length < 12) {
+    return res.status(400).json({ error: "Nouveau mot de passe : 12 caractères minimum" });
   }
   const hash = newPassword ? await bcrypt.hash(newPassword, 10) : rows[0].password_hash;
   try {
@@ -567,11 +604,31 @@ app.post("/api/send-mail", wrap(async (req, res) => {
   const { subject, html, to: toOverride } = req.body;
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.RESEND_FROM;
-  // Adresse cible : celle fournie par le client (ex. récap mensuel) si
-  // valide, sinon la valeur serveur (compta) par défaut.
-  const override = String(toOverride || "").trim();
-  const validEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(override);
-  const to = validEmail ? override : (process.env.MAIL_TO || "compta@montpellierdepannage.com");
+  const compta = process.env.MAIL_TO || "compta@montpellierdepannage.com";
+  // Destinataire : on n'accepte JAMAIS une adresse arbitraire fournie par le
+  // client (le domaine d'envoi est vérifié — cela permettrait d'usurper
+  // l'entreprise). Seules sont autorisées les adresses configurées côté
+  // serveur : compta (env) + les réglages persistés Frank / récap.
+  const override = String(toOverride || "").trim().toLowerCase();
+  const allowed = new Set(
+    [compta, await getSetting("frank_mail_to"), await getSetting("recap_mail_to")]
+      .map((a) => String(a || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+  let to;
+  if (!override) {
+    to = compta;
+  } else if (allowed.has(override)) {
+    to = override;
+  } else {
+    return res.status(403).json({
+      error: "Adresse de destination non autorisée. Enregistrez-la d'abord dans les réglages.",
+    });
+  }
+  // Garde-fou : un email de tableau reste petit ; on plafonne le HTML.
+  if (String(html || "").length > 200_000) {
+    return res.status(413).json({ error: "Contenu de l'email trop volumineux." });
+  }
   if (!apiKey || !from) {
     return res.status(503).json({
       error: "Envoi d'email non configuré sur le serveur (RESEND_API_KEY / RESEND_FROM manquants).",
