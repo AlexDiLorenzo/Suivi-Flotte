@@ -982,8 +982,8 @@ function TopBar({ user, onLogout, onUserChange, active, onNav }) {
       <nav style={{ display: 'flex', gap: 4, background: C.bg, padding: 4, borderRadius: 11 }}>
         {navBtn('dashboard', 'Tableau de bord')}
         {navBtn('stats', 'Indicateurs')}
-        {navBtn('presence', 'Présence Pérols')}
         {navBtn('planning', 'Planning')}
+        {navBtn('presence', 'Présence Pérols')}
         {navBtn('recap', 'Récapitulatif mensuel')}
         {navBtn('frank', 'Suivi Frank')}
       </nav>
