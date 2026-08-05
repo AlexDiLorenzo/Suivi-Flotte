@@ -39,8 +39,11 @@ const ITEM_TYPES = ['Filtre à air', 'Filtre à huile', 'Filtre à gasoil',
 
 const VEHICLE_STATUTS = ['Actif', 'Stocké', 'En cession', 'Hors service']
 
-// Usage du véhicule (mention carte grise)
-const VEHICLE_USAGES = ['VASP', 'TSPT']
+// Genre du véhicule (carte grise, rubrique J.1) — seul le code est stocké
+const VEHICLE_USAGES = [
+  { code: 'VASP', label: 'VASP — véhicule automoteur spécialisé' },
+  { code: 'TCP', label: 'TCP — transport en commun de personnes' },
+]
 
 const CATEGORY_PALETTE = ['#F4C7D9', '#F2EAB6', '#C9B8DC', '#F2D2A9', '#B7D7E8',
   '#C6E0B4', '#E8E4A0', '#F9E79F', '#BFE6C4', '#AEC8E8']
@@ -1410,11 +1413,13 @@ function VehicleModal({ categories, initialCategoryId, vehicle, onClose, onSaved
               value={form.ptac} onChange={(e) => set('ptac', e.target.value)}
               placeholder="3500" />
           </Field>
-          <Field label="Usage" hint="mention carte grise">
+          <Field label="Usage" hint="genre carte grise (J.1)">
             <select style={S.input} value={form.usage_type}
               onChange={(e) => set('usage_type', e.target.value)}>
               <option value="">— Non renseigné —</option>
-              {VEHICLE_USAGES.map((u) => <option key={u} value={u}>{u}</option>)}
+              {VEHICLE_USAGES.map((u) => (
+                <option key={u.code} value={u.code}>{u.label}</option>
+              ))}
             </select>
           </Field>
         </div>
@@ -3134,7 +3139,7 @@ function StatsPage({ categories, vehicles }) {
       { label: 'Date de contrôle technique', ...rate((v) => v.ct_date) },
       { label: 'Statut du véhicule', ...rate((v) => v.statut) },
       { label: 'PTAC', ...rate((v) => Number(v.ptac) > 0) },
-      { label: 'Usage (VASP / TSPT)', ...rate((v) => v.usage_type) },
+      { label: 'Usage (VASP / TCP)', ...rate((v) => v.usage_type) },
       { label: 'Numéro de série', ...rate((v) => (v.numero_serie || '').trim()) },
     ]
   }, [vehicles])

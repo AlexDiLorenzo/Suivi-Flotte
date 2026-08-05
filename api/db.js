@@ -170,7 +170,7 @@ export async function initDB() {
       -- Échéance d'assurance et statut d'exploitation du véhicule
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS assurance_date TEXT NOT NULL DEFAULT '';
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS statut TEXT NOT NULL DEFAULT '';
-      -- PTAC (poids total autorisé en charge, en kg) et usage carte grise (VASP / TSPT)
+      -- PTAC (poids total autorisé en charge, en kg) et genre carte grise (VASP / TCP)
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS ptac INT;
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS usage_type TEXT NOT NULL DEFAULT '';
 

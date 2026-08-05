@@ -158,7 +158,8 @@ everywhere without being persisted — pick `AS` (or any code) to override.
   status (`Actif` / `Stocké` / `En cession` / `Hors service`, empty = unset).
   `ptac` is the *poids total autorisé en charge* in **kg** (`INT`, nullable —
   sanitised server-side by `parsePtac`, which nulls anything non-numeric or ≤ 0);
-  `usage_type` is the registration-document usage (`VASP` / `TSPT`, empty =
+  `usage_type` is the registration-document genre, field J.1 (`VASP` = véhicule
+  automoteur spécialisé / `TCP` = transport en commun de personnes, empty =
   unset). Both are added by `initDB()` via `ALTER TABLE … ADD COLUMN IF NOT
   EXISTS` and are editable in `VehicleModal`, shown in `VehicleDetail`, in two
   dedicated Dashboard columns and in the StatsPage completeness panel.
