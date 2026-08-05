@@ -176,6 +176,13 @@ app.get("/api/vehicles/:id", wrap(async (req, res) => {
   res.json(rows[0]);
 }));
 
+// PTAC : entier positif en kg, ou null si non renseigné
+function parsePtac(raw) {
+  if (raw === undefined || raw === null || raw === "") return null;
+  const n = Math.round(Number(raw));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 app.post("/api/vehicles", wrap(async (req, res) => {
   const v = req.body;
   if (!v.category_id) return res.status(400).json({ error: "Catégorie requise" });
@@ -183,12 +190,13 @@ app.post("/api/vehicles", wrap(async (req, res) => {
   const { rows } = await pool.query(
     `INSERT INTO vehicles
        (category_id, marque, modele, immatriculation, date_mec, numero_serie,
-        ct_date, assurance_date, statut, notes, position)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+        ct_date, assurance_date, statut, ptac, usage_type, notes, position)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
     [
       v.category_id, v.marque || "", v.modele || "", v.immatriculation || "",
       v.date_mec || "", v.numero_serie || "", v.ct_date || "",
-      v.assurance_date || "", v.statut || "", v.notes || "", pos[0].p,
+      v.assurance_date || "", v.statut || "", parsePtac(v.ptac),
+      v.usage_type || "", v.notes || "", pos[0].p,
     ]
   );
   res.json(rows[0]);
@@ -199,12 +207,14 @@ app.put("/api/vehicles/:id", wrap(async (req, res) => {
   const { rows } = await pool.query(
     `UPDATE vehicles SET
        category_id=$1, marque=$2, modele=$3, immatriculation=$4, date_mec=$5,
-       numero_serie=$6, ct_date=$7, assurance_date=$8, statut=$9, notes=$10
-     WHERE id=$11 RETURNING *`,
+       numero_serie=$6, ct_date=$7, assurance_date=$8, statut=$9,
+       ptac=$10, usage_type=$11, notes=$12
+     WHERE id=$13 RETURNING *`,
     [
       v.category_id, v.marque || "", v.modele || "", v.immatriculation || "",
       v.date_mec || "", v.numero_serie || "", v.ct_date || "",
-      v.assurance_date || "", v.statut || "", v.notes || "", req.params.id,
+      v.assurance_date || "", v.statut || "", parsePtac(v.ptac),
+      v.usage_type || "", v.notes || "", req.params.id,
     ]
   );
   if (!rows.length) return res.status(404).json({ error: "Véhicule introuvable" });

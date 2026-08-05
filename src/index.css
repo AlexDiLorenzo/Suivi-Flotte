@@ -70,6 +70,11 @@ button:disabled {
     print-color-adjust: exact !important;
   }
 
+  /* Flotte : compacter pour tenir dans la largeur d'une page portrait */
+  .fleet-table table { font-size: 10.5px !important; min-width: 0 !important; }
+  .fleet-table th,
+  .fleet-table td { padding: 4px 5px !important; min-width: 0 !important; }
+
   /* Planning : compacter pour tenir sur une seule page à l'impression */
   .planning-area h1 { font-size: 18px !important; }
   .planning-area table { font-size: 10px !important; }

@@ -115,7 +115,8 @@ everywhere without being persisted — pick `AS` (or any code) to override.
   JetBrains Mono (plates / numbers / money). A few `:hover` rules live in
   `index.css`.
 - **Dashboard** = the fleet list: category section rows use the category color;
-  columns are Marque / Modèle / Immatriculation / 1ère MEC / Prochain CT. The CT
+  columns are Marque / Modèle / Immatriculation / PTAC / Usage / 1ère MEC /
+  Prochain CT (the search box also matches the usage). The CT
   cell (`CtCell`) shows the next inspection date + a coloured `J-xx` countdown
   pill (`ctTone`: red ≤30 j or overdue, orange ≤90 j, green beyond). Rows are
   sorted within each category by CT date (`ctSort`, soonest first).
@@ -155,6 +156,12 @@ everywhere without being persisted — pick `AS` (or any code) to override.
   technical-inspection date — the CT cycle is **biennial**. `assurance_date`
   (`YYYY-MM-DD`) is the insurance-renewal due date; `statut` is the operating
   status (`Actif` / `Stocké` / `En cession` / `Hors service`, empty = unset).
+  `ptac` is the *poids total autorisé en charge* in **kg** (`INT`, nullable —
+  sanitised server-side by `parsePtac`, which nulls anything non-numeric or ≤ 0);
+  `usage_type` is the registration-document usage (`VASP` / `TSPT`, empty =
+  unset). Both are added by `initDB()` via `ALTER TABLE … ADD COLUMN IF NOT
+  EXISTS` and are editable in `VehicleModal`, shown in `VehicleDetail`, in two
+  dedicated Dashboard columns and in the StatsPage completeness panel.
   The legacy `ct_month`/`ct_day` columns are kept but unused; `initDB()` adds
   `ct_date` / `assurance_date` / `statut`
   via `ALTER TABLE … ADD COLUMN IF NOT EXISTS` and back-fills it from the old

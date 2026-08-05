@@ -55,6 +55,8 @@ export async function initDB() {
         ct_date TEXT NOT NULL DEFAULT '',
         assurance_date TEXT NOT NULL DEFAULT '',
         statut TEXT NOT NULL DEFAULT '',
+        ptac INT,
+        usage_type TEXT NOT NULL DEFAULT '',
         notes TEXT NOT NULL DEFAULT '',
         position INT NOT NULL DEFAULT 0,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -168,6 +170,9 @@ export async function initDB() {
       -- Échéance d'assurance et statut d'exploitation du véhicule
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS assurance_date TEXT NOT NULL DEFAULT '';
       ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS statut TEXT NOT NULL DEFAULT '';
+      -- PTAC (poids total autorisé en charge, en kg) et usage carte grise (VASP / TSPT)
+      ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS ptac INT;
+      ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS usage_type TEXT NOT NULL DEFAULT '';
 
       -- Catégorie de l'employé : 'depanneur' | 'mecanicien' | 'chauffeur'
       ALTER TABLE presence_drivers ADD COLUMN IF NOT EXISTS categorie TEXT NOT NULL DEFAULT 'depanneur';

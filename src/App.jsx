@@ -39,6 +39,9 @@ const ITEM_TYPES = ['Filtre à air', 'Filtre à huile', 'Filtre à gasoil',
 
 const VEHICLE_STATUTS = ['Actif', 'Stocké', 'En cession', 'Hors service']
 
+// Usage du véhicule (mention carte grise)
+const VEHICLE_USAGES = ['VASP', 'TSPT']
+
 const CATEGORY_PALETTE = ['#F4C7D9', '#F2EAB6', '#C9B8DC', '#F2D2A9', '#B7D7E8',
   '#C6E0B4', '#E8E4A0', '#F9E79F', '#BFE6C4', '#AEC8E8']
 
@@ -146,6 +149,16 @@ function fmtMoney(n) {
 function fmtKm(n) {
   if (n === null || n === undefined || n === '') return '—'
   return Number(n).toLocaleString('fr-FR') + ' km'
+}
+// PTAC stocké en kg — « 3 500 kg », ou « 3 500 kg (3,5 t) » en version longue
+function fmtPtac(n, long = false) {
+  if (n === null || n === undefined || n === '') return '—'
+  const kg = Number(n)
+  if (!Number.isFinite(kg) || kg <= 0) return '—'
+  const base = `${kg.toLocaleString('fr-FR')} kg`
+  if (!long) return base
+  const t = (kg / 1000).toLocaleString('fr-FR', { maximumFractionDigits: 2 })
+  return `${base} (${t} t)`
 }
 function itemTotal(it) {
   return (Number(it.quantite) || 0) * (Number(it.prix_unitaire) || 0)
@@ -1121,7 +1134,8 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
 
   const q = search.trim().toLowerCase()
   const matches = (v) =>
-    !q || [v.marque, v.modele, v.immatriculation].some((x) => (x || '').toLowerCase().includes(q))
+    !q || [v.marque, v.modele, v.immatriculation, v.usage_type]
+      .some((x) => (x || '').toLowerCase().includes(q))
 
   const byCategory = useMemo(() => {
     const map = {}
@@ -1147,7 +1161,7 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
       {/* Barre d'outils */}
       <div className="no-print" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
         <input
-          placeholder="Rechercher (marque, modèle, immatriculation)…"
+          placeholder="Rechercher (marque, modèle, immatriculation, usage)…"
           value={search} onChange={(e) => setSearch(e.target.value)}
           style={{ ...S.input, maxWidth: 320 }}
         />
@@ -1158,16 +1172,16 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
       </div>
 
       {/* Tableau */}
-      <div className="tablewrap" style={{
+      <div className="tablewrap fleet-table" style={{
         background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12,
         overflow: 'auto', boxShadow: '0 1px 3px rgba(0,0,0,.04)',
       }}>
-        <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 640, fontSize: 13 }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 820, fontSize: 13 }}>
           <thead>
             <tr>
-              {['Marque', 'Modèle', 'Immatriculation', '1ère MEC', 'Prochain CT'].map((h, i) => (
+              {['Marque', 'Modèle', 'Immatriculation', 'PTAC', 'Usage', '1ère MEC', 'Prochain CT'].map((h, i) => (
                 <th key={h} style={{
-                  ...thBase, textAlign: 'left', minWidth: [120, 140, 150, 100, 190][i],
+                  ...thBase, textAlign: 'left', minWidth: [120, 140, 150, 95, 80, 100, 190][i],
                   position: 'sticky', top: 0, zIndex: 2,
                 }}>{h}</th>
               ))}
@@ -1180,7 +1194,7 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
               return (
                 <React.Fragment key={cat.id}>
                   <tr>
-                    <td colSpan={5} style={{
+                    <td colSpan={7} style={{
                       background: cat.color, padding: '8px 12px',
                       borderTop: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`,
                     }}>
@@ -1201,7 +1215,7 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
                     </td>
                   </tr>
                   {list.length === 0 ? (
-                    <tr><td colSpan={5} style={{ ...tdBase, color: C.muted, fontStyle: 'italic' }}>
+                    <tr><td colSpan={7} style={{ ...tdBase, color: C.muted, fontStyle: 'italic' }}>
                       Aucun véhicule — cliquez sur « + Véhicule » pour en ajouter.
                     </td></tr>
                   ) : list.map((v) => (
@@ -1219,6 +1233,14 @@ function Dashboard({ categories, vehicles, onOpenVehicle, reload }) {
                             🔧 {v.interventions_count}
                           </span>
                         )}
+                      </td>
+                      <td style={{ ...tdBase, fontFamily: FONT_MONO, whiteSpace: 'nowrap' }}>
+                        {fmtPtac(v.ptac)}
+                      </td>
+                      <td style={tdBase}>
+                        {v.usage_type
+                          ? <span style={usageBadge}>{v.usage_type}</span>
+                          : <span style={{ color: C.muted }}>—</span>}
                       </td>
                       <td style={{ ...tdBase, fontFamily: FONT_MONO, color: C.muted }}>
                         {v.date_mec || '—'}
@@ -1289,6 +1311,11 @@ const miniBtn = {
   border: '1px solid #00000033', background: '#ffffffcc', borderRadius: 7,
   padding: '4px 10px', fontSize: 12.5, color: C.black,
 }
+const usageBadge = {
+  display: 'inline-block', fontFamily: FONT_MONO, fontSize: 11, fontWeight: 700,
+  letterSpacing: 0.5, background: C.borderSoft, color: C.ink,
+  padding: '2px 7px', borderRadius: 6, whiteSpace: 'nowrap',
+}
 const interventionBadge = {
   marginLeft: 8, fontSize: 11, background: C.borderSoft, color: C.muted,
   padding: '2px 6px', borderRadius: 20, fontWeight: 600, whiteSpace: 'nowrap',
@@ -1310,6 +1337,8 @@ function VehicleModal({ categories, initialCategoryId, vehicle, onClose, onSaved
     ct_date: vehicle?.ct_date || '',
     assurance_date: vehicle?.assurance_date || '',
     statut: vehicle?.statut || '',
+    ptac: vehicle?.ptac ?? '',
+    usage_type: vehicle?.usage_type || '',
     notes: vehicle?.notes || '',
   })
   const [busy, setBusy] = useState(false)
@@ -1373,6 +1402,20 @@ function VehicleModal({ categories, initialCategoryId, vehicle, onClose, onSaved
           <Field label="Échéance d'assurance">
             <input style={S.input} type="date" value={form.assurance_date}
               onChange={(e) => set('assurance_date', e.target.value)} />
+          </Field>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <Field label="PTAC" hint="poids total autorisé en charge, en kg">
+            <input style={{ ...S.input, fontFamily: FONT_MONO }} type="number" min="0" step="10"
+              value={form.ptac} onChange={(e) => set('ptac', e.target.value)}
+              placeholder="3500" />
+          </Field>
+          <Field label="Usage" hint="mention carte grise">
+            <select style={S.input} value={form.usage_type}
+              onChange={(e) => set('usage_type', e.target.value)}>
+              <option value="">— Non renseigné —</option>
+              {VEHICLE_USAGES.map((u) => <option key={u} value={u}>{u}</option>)}
+            </select>
           </Field>
         </div>
         <Field label="Statut du véhicule">
@@ -1576,6 +1619,8 @@ function VehicleDetail({ vehicleId, categories, onBack, reloadFleet }) {
               value={vehicle.ct_date ? formatDate(vehicle.ct_date) : '—'} mono />
             <InfoCell label="Échéance assurance"
               value={vehicle.assurance_date ? formatDate(vehicle.assurance_date) : '—'} mono />
+            <InfoCell label="PTAC" value={fmtPtac(vehicle.ptac, true)} mono />
+            <InfoCell label="Usage" value={vehicle.usage_type || '—'} />
             <InfoCell label="Statut" value={vehicle.statut || '—'} />
             <InfoCell label="Interventions" value={String(interventions.length)} />
             <InfoCell label="Coût total HT" value={fmtMoney(grandTotal)} mono accent />
@@ -3088,6 +3133,8 @@ function StatsPage({ categories, vehicles }) {
       { label: '1ère mise en circulation', ...rate((v) => ageYears(v.date_mec) != null) },
       { label: 'Date de contrôle technique', ...rate((v) => v.ct_date) },
       { label: 'Statut du véhicule', ...rate((v) => v.statut) },
+      { label: 'PTAC', ...rate((v) => Number(v.ptac) > 0) },
+      { label: 'Usage (VASP / TSPT)', ...rate((v) => v.usage_type) },
       { label: 'Numéro de série', ...rate((v) => (v.numero_serie || '').trim()) },
     ]
   }, [vehicles])
