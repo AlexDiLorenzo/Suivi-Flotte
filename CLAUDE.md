@@ -141,6 +141,9 @@ everywhere without being persisted — pick `AS` (or any code) to override.
 - **`apiFetch()`** wraps `fetch`, injects the JWT, auto-logs-out on 401.
 - **Auth:** token in `localStorage` (`flotte-token` / `flotte-user`).
   `LoginScreen` calls `/api/auth/check` → setup form (first run) or login.
+  `AccountModal` holds both the current user's credentials **and** the list of
+  application accounts (create / delete) — passwords are `MIN_PASSWORD` (12)
+  chars minimum, mirroring the server rule.
 - **Styling is inline.** Fonts: DM Sans (body), Space Mono (headings),
   JetBrains Mono (plates / numbers / money). A few `:hover` rules live in
   `index.css`.
@@ -171,6 +174,9 @@ everywhere without being persisted — pick `AS` (or any code) to override.
   `/auth/credentials`) are protected by an **in-memory per-IP rate limiter**
   (`loginRateLimit`, 15 attempts / 15 min, 429 on excess); `app.set('trust
   proxy', true)` + nginx `X-Forwarded-For` give the real client IP.
+- **No roles.** Every account has the same rights over the whole app, so any
+  signed-in account may create or delete another one (`/auth/users`). Two
+  guards: you cannot delete your own account, nor the last remaining one.
 - **`initDB()`** (`api/db.js`) creates tables (idempotent `CREATE TABLE IF NOT
   EXISTS`) and, on an empty DB, seeds the fleet from `api/seedData.js`. The
   default Pérols team is seeded by a **separate, independent block** gated on an
@@ -200,6 +206,9 @@ everywhere without being persisted — pick `AS` (or any code) to override.
   `week_start` (the Monday, `YYYY-MM-DD`).
 - Endpoints:
   - `GET /api/auth/check`, `POST /api/auth/setup`, `POST /api/auth/login`
+  - `PUT /api/auth/credentials` — own username / password
+  - `GET/POST /api/auth/users`, `DELETE /api/auth/users/:id` — the app's
+    accounts, managed from `AccountModal` (« Mon compte »)
   - `GET/POST /api/categories`, `PUT/DELETE /api/categories/:id`
   - `GET/POST /api/vehicles`, `GET/PUT/DELETE /api/vehicles/:id`
   - `GET /api/vehicles/:id/interventions`

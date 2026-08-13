@@ -1145,8 +1145,10 @@ function TopBar({ user, onLogout, onUserChange, active, onNav }) {
 }
 
 /* ════════════════════════════════════════════════════════════
-   Mon compte — modification de l'identifiant et du mot de passe
+   Mon compte — identifiants personnels et comptes de l'application
    ════════════════════════════════════════════════════════════ */
+const MIN_PASSWORD = 12
+
 function AccountModal({ user, onClose, onSaved }) {
   const notify = useToast()
   const [newUsername, setNewUsername] = useState(user || '')
@@ -1155,11 +1157,59 @@ function AccountModal({ user, onClose, onSaved }) {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [busy, setBusy] = useState(false)
 
+  // ── Comptes de l'application (mêmes droits pour tous) ──
+  const [users, setUsers] = useState([])
+  const [account, setAccount] = useState({ username: '', password: '', confirm: '' })
+  const [creating, setCreating] = useState(false)
+  const [confirmDel, setConfirmDel] = useState(null)
+
+  const loadUsers = useCallback(async () => {
+    try {
+      setUsers(await apiFetch('/auth/users'))
+    } catch (err) { notify(err.message, 'error') }
+  }, [notify])
+
+  useEffect(() => { loadUsers() }, [loadUsers])
+
+  const createAccount = async (e) => {
+    e.preventDefault()
+    const username = account.username.trim()
+    if (!username) { notify('Identifiant requis', 'error'); return }
+    if (account.password.length < MIN_PASSWORD) {
+      notify(`Mot de passe : ${MIN_PASSWORD} caractères minimum`, 'error'); return
+    }
+    if (account.password !== account.confirm) {
+      notify('Les deux mots de passe ne correspondent pas', 'error'); return
+    }
+    setCreating(true)
+    try {
+      await apiFetch('/auth/users', {
+        method: 'POST',
+        body: JSON.stringify({ username, password: account.password }),
+      })
+      notify(`Compte « ${username} » créé`, 'success')
+      setAccount({ username: '', password: '', confirm: '' })
+      loadUsers()
+    } catch (err) {
+      notify(err.message, 'error')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const removeAccount = async (u) => {
+    try {
+      await apiFetch(`/auth/users/${u.id}`, { method: 'DELETE' })
+      notify(`Compte « ${u.username} » supprimé`, 'success')
+      loadUsers()
+    } catch (err) { notify(err.message, 'error') }
+  }
+
   const save = async (e) => {
     e.preventDefault()
     if (!currentPassword) { notify('Saisissez votre mot de passe actuel', 'error'); return }
-    if (newPassword && newPassword.length < 12) {
-      notify('Le nouveau mot de passe doit comporter au moins 12 caractères', 'error'); return
+    if (newPassword && newPassword.length < MIN_PASSWORD) {
+      notify(`Le nouveau mot de passe doit comporter au moins ${MIN_PASSWORD} caractères`, 'error'); return
     }
     if (newPassword && newPassword !== confirmPassword) {
       notify('Les deux mots de passe ne correspondent pas', 'error'); return
@@ -1186,7 +1236,7 @@ function AccountModal({ user, onClose, onSaved }) {
   }
 
   return (
-    <Modal title="Mon compte" onClose={onClose} width={420}>
+    <Modal title="Mon compte" onClose={onClose} width={520}>
       <form onSubmit={save} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>
           Modifiez l'identifiant et le mot de passe de connexion. Le mot de passe
@@ -1222,6 +1272,74 @@ function AccountModal({ user, onClose, onSaved }) {
           </button>
         </div>
       </form>
+
+      {/* ── Comptes de l'application ── */}
+      <div style={{ borderTop: `1px solid ${C.borderSoft}`, margin: '22px -22px 0', padding: '20px 22px 0' }}>
+        <h3 style={{ fontFamily: FONT_HEAD, fontSize: 14.5, fontWeight: 700, marginBottom: 6 }}>
+          Comptes de l'application
+        </h3>
+        <p style={{ fontSize: 13, color: C.muted, margin: '0 0 14px', lineHeight: 1.45 }}>
+          Chaque compte dispose des mêmes droits sur l'application. Les données
+          sont partagées : chacun voit et modifie la même flotte.
+        </p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
+          {users.map((u) => (
+            <div key={u.id} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px',
+              background: C.bg, borderRadius: 9, fontSize: 14,
+            }}>
+              <span style={{ fontWeight: 600, flex: 1 }}>{u.username}</span>
+              {u.username === user ? (
+                <span style={{ fontSize: 12, color: C.muted }}>vous</span>
+              ) : (
+                <button style={{ ...miniBtn2, color: C.red }} title="Supprimer ce compte"
+                  onClick={() => setConfirmDel(u)}>🗑</button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <form onSubmit={createAccount} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label style={S.label}>Nouvel identifiant</label>
+            <input style={S.input} value={account.username} autoComplete="off"
+              placeholder="ex. Franck"
+              onChange={(e) => setAccount((a) => ({ ...a, username: e.target.value }))} />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <label style={S.label}>Mot de passe</label>
+              <input style={S.input} type="password" value={account.password}
+                autoComplete="new-password"
+                onChange={(e) => setAccount((a) => ({ ...a, password: e.target.value }))} />
+            </div>
+            <div>
+              <label style={S.label}>Confirmer</label>
+              <input style={S.input} type="password" value={account.confirm}
+                autoComplete="new-password"
+                onChange={(e) => setAccount((a) => ({ ...a, confirm: e.target.value }))} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 11.5, color: C.muted }}>
+              {MIN_PASSWORD} caractères minimum
+            </span>
+            <div style={{ flex: 1 }} />
+            <button type="submit" style={S.btn} disabled={creating}>
+              {creating ? '…' : '+ Créer le compte'}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {confirmDel && (
+        <ConfirmDialog
+          message={`Supprimer le compte « ${confirmDel.username} » ? Cette personne ne pourra plus se connecter à l'application.`}
+          onConfirm={() => removeAccount(confirmDel)}
+          onClose={() => setConfirmDel(null)}
+        />
+      )}
     </Modal>
   )
 }

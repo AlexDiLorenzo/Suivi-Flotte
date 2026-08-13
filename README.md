@@ -24,6 +24,9 @@ contrôles techniques et historique des interventions de chaque véhicule.
 - **Impression** des tableaux (flotte et présence) et **envoi automatique** à
   `compta@montpellierdepannage.com` (via Resend).
 - Connexion sécurisée (JWT), données partagées via PostgreSQL.
+- **Comptes** : plusieurs utilisateurs possibles, tous avec les mêmes droits.
+  Création et suppression depuis « Mon compte » (mot de passe : 12 caractères
+  minimum).
 
 ## Démarrage en local
 
