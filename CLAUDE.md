@@ -34,12 +34,15 @@ No test runner or linter is configured.
 
 All logic and components are inline in `App.jsx`: `LoginScreen`, `FlotteApp`,
 `TopBar`, `Dashboard`, `VehicleModal`, `CategoryModal`, `VehicleDetail`,
-`InterventionModal`, `StatsPage`, `PresencePage`, `PlanningPage`, `MonthlyRecap`,
-`FrankPage`, `TeamModal`, `Modal`, `ConfirmDialog`, `ToastHost`. No router, no
-state library. Navigation is a `view` state object with seven views: `dashboard`,
-`vehicle`, `stats`, `presence`, `planning`, `recap`, `frank` (the `TopBar` nav
-switches between the fleet dashboard, the indicators page, the Pérols presence
-sheet, the weekly planning, the monthly recap and the Frank on-call summary).
+`InterventionModal`, `VehicleDocuments`, `DocumentsPage`, `DocumentModal`,
+`DocPreviewModal`, `ImportDocsModal`, `StatsPage`, `PresencePage`,
+`PlanningPage`, `MonthlyRecap`, `FrankPage`, `TeamModal`, `Modal`,
+`ConfirmDialog`, `ToastHost`. No router, no state library. Navigation is a
+`view` state object with eight views: `dashboard`, `vehicle`, `documents`,
+`stats`, `presence`, `planning`, `recap`, `frank` (the `TopBar` nav switches
+between the fleet dashboard, the documents page, the indicators page, the Pérols
+presence sheet, the weekly planning, the monthly recap and the Frank on-call
+summary).
 
 - **PlanningPage** = the **Planning** tab: a weekly Mon→Sun grid (same
   `presence_drivers` rows) built for wall display / printing. **Independent,
@@ -108,6 +111,33 @@ everywhere without being persisted — pick `AS` (or any code) to override.
   cours de déploiement" placeholder is shown (`dataReady` flag). CSS-only
   charts (`HBar` / `MonthBars` / `AgeStack`), no chart library.
 
+- **DocumentsPage** = the **Documents** tab: the fleet-wide administrative-paper
+  view. One row per vehicle with its **carte grise** (registration document) and
+  **carte blanche** (the dépanneuse's authorisation to operate — the document
+  that actually expires), the carte blanche's expiry date, and a count of other
+  documents. A KPI band counts held/missing documents, expiries within 90 days
+  and expired ones; a filter select narrows to `missing_cg` / `missing_cb` /
+  `expiring` / `expired`. Expiry dates reuse the CT pills (`ctInfo` / `ctTone`,
+  red ≤30 j or overdue, orange ≤90 j, green beyond) via `ExpiryPill`.
+  - **`ImportDocsModal`** = bulk import. Files are matched to vehicles by the
+    **plate read from the filename** (`plateFromFilename`: the segment before
+    « - CARTE GRISE », else the first SIV/FNI pattern) compared on a normalised
+    key (`normalizePlate`). A unique **Damerau distance ≤ 1** neighbour is
+    offered as an *approximate* match (orange, plate select stays editable so it
+    must be eyeballed); anything else is left to a manual vehicle select.
+    A « Remplacer les documents existants » checkbox turns duplicates from
+    skipped into replaced (the old row is deleted **after** the new upload
+    succeeds). Files named « … A VERIFIER » land with an `À vérifier (source)`
+    note. `api/importDocuments.js` is the CLI twin of this screen.
+  - **`VehicleDocuments`** = the same documents on the vehicle sheet (between
+    the identity card and the intervention history), with empty *slots* for a
+    missing carte grise / carte blanche, plus preview / edit / delete.
+  - **`DocPreviewModal`** fetches the file as a **blob** (the API needs the JWT,
+    so a plain `<a href>` or `window.open` on the API URL cannot work) and shows
+    it in an `<iframe>` (PDF) or `<img>` (image); the *open* and *download*
+    links then point at that object URL. `fetchDocBlob` / `apiUpload` sit next
+    to `apiFetch` (`apiUpload` posts the raw file with the metadata in the
+    query string).
 - **`apiFetch()`** wraps `fetch`, injects the JWT, auto-logs-out on 401.
 - **Auth:** token in `localStorage` (`flotte-token` / `flotte-user`).
   `LoginScreen` calls `/api/auth/check` → setup form (first run) or login.
@@ -147,7 +177,7 @@ everywhere without being persisted — pick `AS` (or any code) to override.
   empty `presence_drivers` table — so it also populates a DB created before the
   Presence page existed.
 - Tables: `users`, `categories`, `vehicles`, `interventions`,
-  `intervention_items`, `presence_drivers`, `presence_weeks`,
+  `intervention_items`, `vehicle_documents`, `presence_drivers`, `presence_weeks`,
   `presence_entries`, `planning_entries` (weekly Mon→Sun planning, keyed by
   `week_start` + `driver_id`), `planning_special` (the planning's special-ops row,
   1 per `week_start`), `recap_months`, `recap_entries` (per-driver `days`
@@ -173,6 +203,15 @@ everywhere without being persisted — pick `AS` (or any code) to override.
   - `GET/POST /api/categories`, `PUT/DELETE /api/categories/:id`
   - `GET/POST /api/vehicles`, `GET/PUT/DELETE /api/vehicles/:id`
   - `GET /api/vehicles/:id/interventions`
+  - `GET /api/documents` — metadata of every document (never the bytes)
+  - `GET/POST /api/vehicles/:id/documents` — list / upload. The upload takes the
+    **raw file as the request body** (`express.raw`, 20 MB cap, PDF + JPEG/PNG/
+    WebP only — any other content-type leaves the body empty → 415) with the
+    metadata in the query string (`type`, `filename`, `delivrance`,
+    `expiration`, `numero`, `notes`). No multipart parser, no extra dependency
+  - `GET /api/documents/:id/file` — the bytes, `Content-Disposition: inline`
+  - `PUT/DELETE /api/documents/:id` — metadata only (the file itself never
+    changes: delete and re-upload)
   - `POST /api/interventions`, `PUT/DELETE /api/interventions/:id`
     (PUT/POST replace the full `intervention_items` set transactionally)
   - `GET /api/stats` — fleet-wide aggregates for the indicators page
@@ -224,6 +263,30 @@ emailed (`buildFrankEmailHtml` → `POST /api/send-mail` with an explicit `to`, 
 persisted `app_settings.frank_mail_to`); the monthly recap is download-only. The
 **Planning** tab offers both `doPrint('landscape')` and a one-click PDF
 (`generatePlanningPdf`, landscape, optimised for wall display); it is not emailed.
+
+### Vehicle documents
+
+`vehicle_documents` stores the file itself in a **`BYTEA` column** — the Postgres
+backup therefore carries the documents, with no extra volume to mount or keep in
+sync. Roughly 1–2 MB per registration document (~160 MB for the initial 114
+cartes grises), which Postgres TOASTs transparently. Server cap is 20 MB per
+file; `nginx.conf` allows `client_max_body_size 25m` on `/api/` (it was 2 MB and
+would otherwise reject every upload). Doc types: `carte_grise`, `carte_blanche`,
+`autre`. Only `date_expiration` drives the expiry tracking — a carte grise has
+no expiry, a carte blanche does.
+
+**`api/importDocuments.js`** — bulk import from a folder, the CLI twin of
+`ImportDocsModal` (same `plateFromFilename` / `normalizePlate` / `editDistance`
+logic, duplicated on purpose: the API image only ships `api/`). It calls
+`initDB()` first, so it is safe to run before the API is redeployed.
+
+```bash
+docker cp ./cartes-grises flotte-api:/import
+docker compose exec flotte-api node importDocuments.js --dir=/import --dry-run
+docker compose exec flotte-api node importDocuments.js --dir=/import --fuzzy
+# --type=carte_blanche  --replace  (default type: carte_grise;
+#  a vehicle that already holds this type is skipped unless --replace)
+```
 
 ### `api/seedData.js`
 

@@ -89,6 +89,31 @@ export async function initDB() {
 
       CREATE INDEX IF NOT EXISTS idx_items_intervention ON intervention_items (intervention_id);
 
+      -- ── Documents administratifs du véhicule ──────────────────
+      -- Carte grise (certificat d'immatriculation), carte blanche
+      -- (autorisation de mise en service des dépanneuses) et autres
+      -- pièces. Le fichier lui-même est stocké en base (BYTEA) : la
+      -- sauvegarde Postgres emporte donc les documents, sans volume
+      -- disque supplémentaire à gérer. date_expiration ('AAAA-MM-JJ'
+      -- ou '') pilote le suivi des échéances.
+      CREATE TABLE IF NOT EXISTS vehicle_documents (
+        id SERIAL PRIMARY KEY,
+        vehicle_id INT NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
+        type TEXT NOT NULL DEFAULT 'autre',
+        filename TEXT NOT NULL DEFAULT '',
+        mime TEXT NOT NULL DEFAULT 'application/pdf',
+        size INT NOT NULL DEFAULT 0,
+        data BYTEA NOT NULL,
+        date_delivrance TEXT NOT NULL DEFAULT '',
+        date_expiration TEXT NOT NULL DEFAULT '',
+        numero TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_documents_vehicle ON vehicle_documents (vehicle_id);
+      CREATE INDEX IF NOT EXISTS idx_documents_type ON vehicle_documents (type);
+
       CREATE TABLE IF NOT EXISTS presence_drivers (
         id SERIAL PRIMARY KEY,
         nom TEXT NOT NULL DEFAULT '',

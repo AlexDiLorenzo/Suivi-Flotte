@@ -122,6 +122,7 @@ app.put("/api/auth/credentials", loginRateLimit, auth, wrap(async (req, res) => 
 app.use("/api/categories", auth);
 app.use("/api/vehicles", auth);
 app.use("/api/interventions", auth);
+app.use("/api/documents", auth);
 app.use("/api/presence", auth);
 app.use("/api/planning", auth);
 app.use("/api/recap", auth);
@@ -309,6 +310,133 @@ app.put("/api/interventions/:id", wrap(async (req, res) => {
 
 app.delete("/api/interventions/:id", wrap(async (req, res) => {
   await pool.query("DELETE FROM interventions WHERE id=$1", [req.params.id]);
+  res.json({ ok: true });
+}));
+
+// ── Documents administratifs des véhicules ──────────────────
+// Carte grise (certificat d'immatriculation), carte blanche
+// (autorisation de mise en service des dépanneuses) et autres pièces.
+// Le fichier est stocké en base (BYTEA) et ne transite que par la
+// route `/file` — les listes ne renvoient que les métadonnées.
+const DOC_TYPES = new Set(["carte_grise", "carte_blanche", "autre"]);
+const DOC_MIMES = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp"]);
+const DOC_MAX_BYTES = 20 * 1024 * 1024;
+const DOC_FIELDS = `id, vehicle_id, type, filename, mime, size,
+  date_delivrance, date_expiration, numero, notes, created_at`;
+
+const docMime = (req) => String(req.headers["content-type"] || "").split(";")[0].trim();
+
+function parseDocType(raw) {
+  const t = String(raw || "").trim();
+  return DOC_TYPES.has(t) ? t : "autre";
+}
+// Date ISO 'AAAA-MM-JJ', ou chaîne vide si absente / mal formée
+function parseIsoDate(raw) {
+  const s = String(raw || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "";
+}
+// Le nom de fichier finit dans un en-tête HTTP : on retire tout chemin
+// et tout caractère de contrôle avant de le stocker.
+function safeFilename(raw) {
+  const s = String(raw || "")
+    .replace(/[\\/]/g, "_")
+    .split("")
+    .filter((ch) => ch.charCodeAt(0) > 31 && ch !== '"')
+    .join("")
+    .trim()
+    .slice(0, 200);
+  return s || "document";
+}
+
+// Corps binaire : accepté uniquement pour les types de fichiers permis.
+// Un content-type non listé laisse `req.body` vide → 415.
+const rawUpload = express.raw({
+  type: (req) => DOC_MIMES.has(docMime(req)),
+  limit: DOC_MAX_BYTES,
+});
+
+// Tous les documents de la flotte (métadonnées) — page Documents
+app.get("/api/documents", wrap(async (_req, res) => {
+  const { rows } = await pool.query(
+    `SELECT ${DOC_FIELDS} FROM vehicle_documents
+     ORDER BY vehicle_id, type, created_at DESC`
+  );
+  res.json(rows);
+}));
+
+// Documents d'un véhicule
+app.get("/api/vehicles/:id/documents", wrap(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT ${DOC_FIELDS} FROM vehicle_documents
+     WHERE vehicle_id=$1 ORDER BY type, created_at DESC`,
+    [req.params.id]
+  );
+  res.json(rows);
+}));
+
+// Dépôt d'un document : corps = le fichier brut, métadonnées en query
+// (?type=carte_grise&filename=…&expiration=AAAA-MM-JJ)
+app.post("/api/vehicles/:id/documents", rawUpload, wrap(async (req, res) => {
+  const buf = Buffer.isBuffer(req.body) ? req.body : null;
+  if (!buf || !buf.length) {
+    return res.status(415).json({
+      error: "Fichier absent ou format non supporté (PDF, JPEG, PNG ou WebP).",
+    });
+  }
+  const { rowCount } = await pool.query("SELECT 1 FROM vehicles WHERE id=$1", [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: "Véhicule introuvable" });
+  const q = req.query;
+  const { rows } = await pool.query(
+    `INSERT INTO vehicle_documents
+       (vehicle_id, type, filename, mime, size, data,
+        date_delivrance, date_expiration, numero, notes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+     RETURNING ${DOC_FIELDS}`,
+    [
+      req.params.id, parseDocType(q.type), safeFilename(q.filename), docMime(req),
+      buf.length, buf, parseIsoDate(q.delivrance), parseIsoDate(q.expiration),
+      String(q.numero || "").slice(0, 60), String(q.notes || "").slice(0, 500),
+    ]
+  );
+  res.json(rows[0]);
+}));
+
+// Contenu du document (aperçu / téléchargement)
+app.get("/api/documents/:id/file", wrap(async (req, res) => {
+  const { rows } = await pool.query(
+    "SELECT filename, mime, data FROM vehicle_documents WHERE id=$1",
+    [req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Document introuvable" });
+  const doc = rows[0];
+  res.setHeader("Content-Type", doc.mime || "application/octet-stream");
+  res.setHeader("Content-Length", doc.data.length);
+  res.setHeader(
+    "Content-Disposition",
+    `inline; filename*=UTF-8''${encodeURIComponent(doc.filename || "document")}`
+  );
+  res.send(doc.data);
+}));
+
+// Métadonnées seules (type, échéance, numéro, notes) — le fichier ne change pas
+app.put("/api/documents/:id", wrap(async (req, res) => {
+  const d = req.body || {};
+  const { rows } = await pool.query(
+    `UPDATE vehicle_documents SET
+       type=$1, date_delivrance=$2, date_expiration=$3, numero=$4, notes=$5
+     WHERE id=$6 RETURNING ${DOC_FIELDS}`,
+    [
+      parseDocType(d.type), parseIsoDate(d.date_delivrance), parseIsoDate(d.date_expiration),
+      String(d.numero || "").slice(0, 60), String(d.notes || "").slice(0, 500),
+      req.params.id,
+    ]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Document introuvable" });
+  res.json(rows[0]);
+}));
+
+app.delete("/api/documents/:id", wrap(async (req, res) => {
+  await pool.query("DELETE FROM vehicle_documents WHERE id=$1", [req.params.id]);
   res.json({ ok: true });
 }));
 
@@ -702,6 +830,10 @@ app.get("/api/pilotage-public/snapshot", wrap(async (req, res) => {
 
 // ── Gestion d'erreurs ───────────────────────────────────────
 app.use((err, _req, res, _next) => {
+  // Dépôt de document au-delà de la limite acceptée (body-parser)
+  if (err?.type === "entity.too.large") {
+    return res.status(413).json({ error: "Fichier trop volumineux (20 Mo maximum)." });
+  }
   console.error(err);
   res.status(500).json({ error: err.message || "Erreur serveur" });
 });

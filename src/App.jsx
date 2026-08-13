@@ -45,6 +45,26 @@ const VEHICLE_USAGES = [
   { code: 'TCP', label: 'TCP — transport en commun de personnes' },
 ]
 
+/* Documents administratifs rattachés à un véhicule.
+   `expiry` : le document porte une date de fin de validité à surveiller. */
+const DOC_TYPES = [
+  {
+    code: 'carte_grise', label: 'Carte grise', short: 'CG', color: '#B7D7E8',
+    hint: "Certificat d'immatriculation", expiry: false,
+  },
+  {
+    code: 'carte_blanche', label: 'Carte blanche', short: 'CB', color: '#F2D2A9',
+    hint: 'Autorisation de mise en service de la dépanneuse', expiry: true,
+  },
+  {
+    code: 'autre', label: 'Autre document', short: 'DOC', color: '#E7E6DE',
+    hint: 'Attestation, procès-verbal, courrier…', expiry: false,
+  },
+]
+const DOC_TYPE = Object.fromEntries(DOC_TYPES.map((t) => [t.code, t]))
+const DOC_ACCEPT = '.pdf,.jpg,.jpeg,.png,.webp'
+const DOC_MAX_BYTES = 20 * 1024 * 1024
+
 const CATEGORY_PALETTE = ['#F4C7D9', '#F2EAB6', '#C9B8DC', '#F2D2A9', '#B7D7E8',
   '#C6E0B4', '#E8E4A0', '#F9E79F', '#BFE6C4', '#AEC8E8']
 
@@ -134,6 +154,44 @@ async function apiFetch(path, opts = {}) {
   }
   if (res.status === 204) return null
   return res.json()
+}
+
+/* Erreur d'une réponse non-JSON ou d'un corps binaire */
+async function apiError(res) {
+  if (res.status === 401) {
+    handleUnauthorized()
+    return new Error('Session expirée, reconnectez-vous.')
+  }
+  let msg = 'Erreur serveur'
+  try { msg = (await res.json()).error || msg } catch { /* ignore */ }
+  return new Error(msg)
+}
+
+/* Dépôt d'un document : le fichier part en corps brut, les métadonnées
+   en paramètres d'URL (l'API n'a pas besoin d'un parseur multipart). */
+async function apiUpload(path, file, params = {}) {
+  const token = localStorage.getItem('flotte-token')
+  const qs = new URLSearchParams({ filename: file.name || 'document', ...params })
+  const res = await fetch(`${API}${path}?${qs}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+      ...(token ? { Authorization: 'Bearer ' + token } : {}),
+    },
+    body: file,
+  })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
+/* Contenu d'un document — récupéré en blob pour rester authentifié */
+async function fetchDocBlob(id) {
+  const token = localStorage.getItem('flotte-token')
+  const res = await fetch(`${API}/documents/${id}/file`, {
+    headers: token ? { Authorization: 'Bearer ' + token } : {},
+  })
+  if (!res.ok) throw await apiError(res)
+  return res.blob()
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -280,6 +338,56 @@ function ctTone(days) {
 /* Tri par échéance CT — la plus proche d'abord, sans date en dernier */
 const ctSort = (a, b) =>
   (a.ct_date || '9999-99-99').localeCompare(b.ct_date || '9999-99-99')
+
+/* ── Documents : rapprochement fichier ↔ véhicule ─────────────
+   Même logique que le script d'import serveur (api/importDocuments.js). */
+const normalizePlate = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+
+/* Immatriculation devinée depuis le nom du fichier : le segment placé
+   avant « - CARTE GRISE », sinon le premier motif SIV (AA-123-AA) ou
+   FNI (123-ABC-34) rencontré. */
+function plateFromFilename(name) {
+  const base = String(name || '').replace(/\.[^.]+$/, '')
+  const head = base.split(/\s+-\s+/)[0].trim()
+  if (normalizePlate(head).length >= 6) return head
+  const m = base.match(/[A-Z]{2}[\s-]?\d{3}[\s-]?[A-Z]{2}/i)
+    || base.match(/\d{1,4}[\s-]?[A-Z]{2,3}[\s-]?\d{2,3}/i)
+  return m ? m[0] : ''
+}
+
+/* Distance d'édition (Damerau) — sert au rapprochement approché :
+   une coquille d'un caractère, ou l'inversion de deux caractères
+   voisins, sur l'immatriculation. */
+function editDistance(a, b) {
+  if (Math.abs(a.length - b.length) > 1) return 9
+  const m = a.length, n = b.length
+  const d = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  )
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1)
+      }
+    }
+  }
+  return d[m][n]
+}
+
+function fmtFileSize(n) {
+  const b = Number(n) || 0
+  if (b < 1024) return `${b} o`
+  if (b < 1048576) return `${Math.round(b / 1024)} Ko`
+  return `${(b / 1048576).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Mo`
+}
+
+/* Tri des documents d'un véhicule : carte grise, carte blanche, puis le reste */
+const docSort = (a, b) => {
+  const rank = (d) => DOC_TYPES.findIndex((t) => t.code === d.type)
+  return rank(a) - rank(b) || (b.created_at || '').localeCompare(a.created_at || '')
+}
 
 /* Impression — règle l'orientation puis lance la boîte d'impression */
 function doPrint(orientation = 'portrait') {
@@ -930,7 +1038,9 @@ function FlotteApp({ user, onLogout, onUserChange }) {
   const goRecap = () => setView({ name: 'recap' })
   const goFrank = () => setView({ name: 'frank' })
   const goPlanning = () => setView({ name: 'planning' })
-  const active = ['presence', 'stats', 'recap', 'frank', 'planning'].includes(view.name) ? view.name : 'dashboard'
+  const goDocuments = () => setView({ name: 'documents' })
+  const active = ['presence', 'stats', 'recap', 'frank', 'planning', 'documents'].includes(view.name)
+    ? view.name : 'dashboard'
 
   const onNav = (n) =>
     n === 'presence' ? goPresence()
@@ -938,7 +1048,8 @@ function FlotteApp({ user, onLogout, onUserChange }) {
         : n === 'recap' ? goRecap()
           : n === 'frank' ? goFrank()
             : n === 'planning' ? goPlanning()
-              : goDashboard()
+              : n === 'documents' ? goDocuments()
+                : goDashboard()
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -960,6 +1071,10 @@ function FlotteApp({ user, onLogout, onUserChange }) {
           <VehicleDetail
             vehicleId={view.id} categories={categories}
             onBack={goDashboard} reloadFleet={loadData}
+          />
+        ) : view.name === 'documents' ? (
+          <DocumentsPage
+            categories={categories} vehicles={vehicles} onOpenVehicle={goVehicle}
           />
         ) : view.name === 'stats' ? (
           <StatsPage categories={categories} vehicles={vehicles} />
@@ -1006,6 +1121,7 @@ function TopBar({ user, onLogout, onUserChange, active, onNav }) {
       </button>
       <nav style={{ display: 'flex', gap: 4, background: C.bg, padding: 4, borderRadius: 11 }}>
         {navBtn('dashboard', 'Tableau de bord')}
+        {navBtn('documents', 'Documents')}
         {navBtn('stats', 'Indicateurs')}
         {navBtn('planning', 'Planning')}
         {navBtn('presence', 'Présence Pérols')}
@@ -1641,6 +1757,9 @@ function VehicleDetail({ vehicleId, categories, onBack, reloadFleet }) {
         </div>
       </div>
 
+      {/* Documents administratifs (carte grise, carte blanche…) */}
+      <VehicleDocuments vehicleId={vehicleId} immatriculation={vehicle.immatriculation} />
+
       {/* Historique des interventions */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <h2 style={{ fontFamily: FONT_HEAD, fontSize: 18, fontWeight: 700 }}>
@@ -1967,6 +2086,798 @@ const cellEdit = { padding: 4, borderBottom: `1px solid ${C.borderSoft}` }
 const inSm = {
   width: '100%', padding: '7px 8px', borderRadius: 6, border: `1px solid ${C.border}`,
   fontSize: 13, background: '#fff', color: C.ink, outline: 'none',
+}
+
+/* ════════════════════════════════════════════════════════════
+   Documents administratifs — cartes grises & cartes blanches
+   ════════════════════════════════════════════════════════════ */
+const pillStyle = {
+  fontFamily: FONT_MONO, fontWeight: 700, fontSize: 11, color: '#fff',
+  padding: '2px 7px', borderRadius: 20, whiteSpace: 'nowrap',
+}
+
+/* Pastille de type de document */
+function DocBadge({ type }) {
+  const t = DOC_TYPE[type] || DOC_TYPE.autre
+  return (
+    <span style={{
+      display: 'inline-block', background: t.color, color: C.black,
+      fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 10.5, letterSpacing: 0.4,
+      padding: '3px 8px', borderRadius: 6, whiteSpace: 'nowrap',
+    }}>{t.label}</span>
+  )
+}
+
+/* Échéance de validité — même code couleur que le contrôle technique */
+function ExpiryPill({ date, empty = '—' }) {
+  const info = ctInfo(date)
+  if (!info) return <span style={{ color: C.muted }}>{empty}</span>
+  const tone = ctTone(info.days)
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+      <span style={{ fontFamily: FONT_MONO, fontSize: 13 }}>{formatDate(date)}</span>
+      <span style={{ ...pillStyle, background: tone.color }}>{tone.label}</span>
+    </span>
+  )
+}
+
+/* Aperçu d'un document — le fichier est chargé en blob (l'API exige le
+   jeton) puis affiché dans la modale ; les liens « ouvrir » et
+   « télécharger » pointent ensuite sur cette URL locale. */
+function DocPreviewModal({ doc, onClose }) {
+  const [url, setUrl] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    let objectUrl = ''
+    fetchDocBlob(doc.id)
+      .then((blob) => {
+        if (!alive) return
+        objectUrl = URL.createObjectURL(blob)
+        setUrl(objectUrl)
+      })
+      .catch((err) => { if (alive) setError(err.message) })
+    return () => { alive = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [doc.id])
+
+  const isImage = String(doc.mime || '').startsWith('image/')
+  return (
+    <Modal title={doc.filename || 'Document'} onClose={onClose} width={920}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14, flexWrap: 'wrap' }}>
+        <DocBadge type={doc.type} />
+        <span style={{ fontSize: 13, color: C.muted }}>{fmtFileSize(doc.size)}</span>
+        {doc.date_expiration && (
+          <span style={{ fontSize: 13 }}>Valide jusqu'au <ExpiryPill date={doc.date_expiration} /></span>
+        )}
+        <div style={{ flex: 1 }} />
+        {url && (
+          <>
+            <a href={url} target="_blank" rel="noopener noreferrer"
+              style={{ ...S.btn, textDecoration: 'none' }}>↗ Ouvrir</a>
+            <a href={url} download={doc.filename || 'document'}
+              style={{ ...S.btn, ...S.btnPrimary, textDecoration: 'none' }}>⇓ Télécharger</a>
+          </>
+        )}
+      </div>
+      {error ? (
+        <p style={{ color: C.red, fontSize: 14 }}>{error}</p>
+      ) : !url ? (
+        <p style={{ color: C.muted, fontSize: 14, padding: 30, textAlign: 'center' }}>Chargement du document…</p>
+      ) : isImage ? (
+        <img src={url} alt={doc.filename}
+          style={{ width: '100%', borderRadius: 10, border: `1px solid ${C.border}` }} />
+      ) : (
+        <iframe src={url} title={doc.filename}
+          style={{ width: '100%', height: '68vh', border: `1px solid ${C.border}`, borderRadius: 10 }} />
+      )}
+    </Modal>
+  )
+}
+
+/* Ajout d'un document (fichier + métadonnées) ou modification des
+   métadonnées d'un document existant. */
+function DocumentModal({ vehicleId, doc, defaultType = 'carte_grise', onClose, onSaved }) {
+  const notify = useToast()
+  const editing = !!doc
+  const [type, setType] = useState(doc?.type || defaultType)
+  const [file, setFile] = useState(null)
+  const [delivrance, setDelivrance] = useState(doc?.date_delivrance || '')
+  const [expiration, setExpiration] = useState(doc?.date_expiration || '')
+  const [numero, setNumero] = useState(doc?.numero || '')
+  const [notes, setNotes] = useState(doc?.notes || '')
+  const [busy, setBusy] = useState(false)
+
+  const save = async () => {
+    if (!editing && !file) return notify('Sélectionnez un fichier', 'error')
+    if (file && file.size > DOC_MAX_BYTES) {
+      return notify('Fichier trop volumineux (20 Mo maximum)', 'error')
+    }
+    setBusy(true)
+    try {
+      if (editing) {
+        await apiFetch(`/documents/${doc.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            type, date_delivrance: delivrance, date_expiration: expiration, numero, notes,
+          }),
+        })
+      } else {
+        await apiUpload(`/vehicles/${vehicleId}/documents`, file, {
+          type, delivrance, expiration, numero, notes,
+        })
+      }
+      notify(editing ? 'Document mis à jour' : 'Document ajouté', 'success')
+      onSaved()
+    } catch (err) {
+      notify(err.message, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title={editing ? 'Modifier le document' : 'Ajouter un document'} onClose={onClose} width={520}>
+      <div style={{ display: 'grid', gap: 14 }}>
+        <Field label="Type de document" hint={DOC_TYPE[type]?.hint}>
+          <select value={type} onChange={(e) => setType(e.target.value)} style={S.input}>
+            {DOC_TYPES.map((t) => <option key={t.code} value={t.code}>{t.label}</option>)}
+          </select>
+        </Field>
+
+        {editing ? (
+          <Field label="Fichier">
+            <div style={{
+              padding: '10px 12px', background: C.bg, borderRadius: 9,
+              fontSize: 13.5, display: 'flex', gap: 10, alignItems: 'center',
+            }}>
+              <span style={{ flex: 1 }}>{doc.filename}</span>
+              <span style={{ color: C.muted }}>{fmtFileSize(doc.size)}</span>
+            </div>
+          </Field>
+        ) : (
+          <Field label="Fichier" hint="PDF ou image (JPEG, PNG, WebP) — 20 Mo maximum">
+            <input type="file" accept={DOC_ACCEPT}
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              style={{ ...S.input, padding: '8px 10px' }} />
+          </Field>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Field label="Date de délivrance">
+            <input type="date" value={delivrance} onChange={(e) => setDelivrance(e.target.value)}
+              style={S.input} />
+          </Field>
+          <Field label="Fin de validité"
+            hint={DOC_TYPE[type]?.expiry ? 'Suivie dans les échéances' : 'Facultatif'}>
+            <input type="date" value={expiration} onChange={(e) => setExpiration(e.target.value)}
+              style={S.input} />
+          </Field>
+        </div>
+
+        <Field label="Numéro du document">
+          <input value={numero} onChange={(e) => setNumero(e.target.value)}
+            placeholder="Facultatif" style={{ ...S.input, fontFamily: FONT_MONO }} />
+        </Field>
+
+        <Field label="Notes">
+          <input value={notes} onChange={(e) => setNotes(e.target.value)}
+            placeholder="Facultatif" style={S.input} />
+        </Field>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 4 }}>
+          <button style={S.btn} onClick={onClose}>Annuler</button>
+          <button style={{ ...S.btn, ...S.btnPrimary }} disabled={busy} onClick={save}>
+            {busy ? 'Envoi…' : editing ? 'Enregistrer' : 'Ajouter le document'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/* Section « Documents » de la fiche véhicule */
+function VehicleDocuments({ vehicleId, immatriculation }) {
+  const notify = useToast()
+  const [docs, setDocs] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [modal, setModal] = useState(null)   // { doc } édition | { defaultType } ajout
+  const [preview, setPreview] = useState(null)
+  const [confirmDel, setConfirmDel] = useState(null)
+
+  const load = useCallback(async () => {
+    try {
+      setDocs(await apiFetch(`/vehicles/${vehicleId}/documents`))
+    } catch (err) {
+      notify(err.message, 'error')
+    } finally {
+      setLoading(false)
+    }
+  }, [vehicleId, notify])
+
+  useEffect(() => { load() }, [load])
+
+  const remove = async (id) => {
+    try {
+      await apiFetch(`/documents/${id}`, { method: 'DELETE' })
+      notify('Document supprimé', 'success')
+      load()
+    } catch (err) { notify(err.message, 'error') }
+  }
+
+  const sorted = [...docs].sort(docSort)
+  // Emplacements attendus pour tout véhicule : carte grise + carte blanche
+  const missing = DOC_TYPES.filter((t) => t.code !== 'autre' && !docs.some((d) => d.type === t.code))
+
+  return (
+    <div style={{ marginBottom: 26 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <h2 style={{ fontFamily: FONT_HEAD, fontSize: 18, fontWeight: 700 }}>
+          Documents administratifs
+        </h2>
+        <button style={S.btn} onClick={() => setModal({ defaultType: missing[0]?.code || 'autre' })}>
+          + Ajouter un document
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{ color: C.muted, fontSize: 14 }}>Chargement des documents…</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {sorted.map((d) => (
+            <div key={d.id} style={{
+              background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12,
+              padding: '12px 16px', display: 'flex', alignItems: 'center',
+              gap: 14, flexWrap: 'wrap',
+            }}>
+              <DocBadge type={d.type} />
+              <div style={{ flex: 1, minWidth: 180 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{d.filename}</div>
+                <div style={{ fontSize: 11.5, color: C.muted }}>
+                  {fmtFileSize(d.size)}
+                  {d.numero ? ` · n° ${d.numero}` : ''}
+                  {d.date_delivrance ? ` · délivré le ${formatDate(d.date_delivrance)}` : ''}
+                  {d.notes ? ` · ${d.notes}` : ''}
+                </div>
+              </div>
+              <div style={{ minWidth: 150 }}>
+                <div style={S.label}>Fin de validité</div>
+                <ExpiryPill date={d.date_expiration} empty="Sans échéance" />
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button style={miniBtn2} onClick={() => setPreview(d)} title="Consulter">👁</button>
+                <button style={miniBtn2} onClick={() => setModal({ doc: d })} title="Modifier">✎</button>
+                <button style={{ ...miniBtn2, color: C.red }} title="Supprimer"
+                  onClick={() => setConfirmDel(d)}>🗑</button>
+              </div>
+            </div>
+          ))}
+
+          {missing.map((t) => (
+            <div key={t.code} style={{
+              border: `1px dashed ${C.border}`, borderRadius: 12, padding: '12px 16px',
+              display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+            }}>
+              <DocBadge type={t.code} />
+              <span style={{ flex: 1, minWidth: 180, fontSize: 13.5, color: C.muted }}>
+                Aucun document — {t.hint.toLowerCase()}
+              </span>
+              <button style={miniBtn2} onClick={() => setModal({ defaultType: t.code })}>
+                + Déposer
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {modal && (
+        <DocumentModal
+          vehicleId={vehicleId} doc={modal.doc} defaultType={modal.defaultType}
+          onClose={() => setModal(null)}
+          onSaved={() => { setModal(null); load() }}
+        />
+      )}
+      {preview && <DocPreviewModal doc={preview} onClose={() => setPreview(null)} />}
+      {confirmDel && (
+        <ConfirmDialog
+          message={`Supprimer « ${confirmDel.filename} » du véhicule ${immatriculation || ''} ? Le fichier sera définitivement effacé.`}
+          onConfirm={() => remove(confirmDel.id)} onClose={() => setConfirmDel(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════
+   Import en masse — un lot de fichiers rattaché par immatriculation
+   ════════════════════════════════════════════════════════════ */
+function ImportDocsModal({ vehicles, docs, onClose, onDone }) {
+  const notify = useToast()
+  const [type, setType] = useState('carte_grise')
+  const [rows, setRows] = useState([])          // { key, file, plate, vehicleId, approx, error }
+  const [replace, setReplace] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [report, setReport] = useState(null)
+
+  // Index immatriculation normalisée → véhicule
+  const plateIndex = useMemo(() => {
+    const map = new Map()
+    for (const v of vehicles) {
+      const key = normalizePlate(v.immatriculation)
+      if (key) map.set(key, v)
+    }
+    return map
+  }, [vehicles])
+
+  const vehicleById = useMemo(
+    () => Object.fromEntries(vehicles.map((v) => [v.id, v])), [vehicles]
+  )
+  // Documents déjà présents, par véhicule et par type
+  const existing = useMemo(() => {
+    const map = {}
+    for (const d of docs) (map[`${d.vehicle_id}|${d.type}`] ||= []).push(d)
+    return map
+  }, [docs])
+
+  const addFiles = (fileList) => {
+    setReport(null)
+    setRows((prev) => {
+      const next = [...prev]
+      for (const file of fileList) {
+        const key = `${file.name}|${file.size}`
+        if (next.some((r) => r.key === key)) continue
+        const plate = plateFromFilename(file.name)
+        const norm = normalizePlate(plate)
+        let vehicle = plateIndex.get(norm) || null
+        let approx = false
+        // Rapprochement approché : accepté seulement s'il est unique
+        if (!vehicle && norm.length >= 6) {
+          const near = [...plateIndex.keys()].filter((k) => editDistance(norm, k) <= 1)
+          if (near.length === 1) { vehicle = plateIndex.get(near[0]); approx = true }
+        }
+        next.push({
+          key, file, plate, approx,
+          vehicleId: vehicle?.id || null,
+          error: file.size > DOC_MAX_BYTES ? 'Fichier > 20 Mo' : '',
+        })
+      }
+      return next
+    })
+  }
+
+  const setVehicle = (key, vehicleId) => {
+    setRows((prev) => prev.map((r) =>
+      r.key === key ? { ...r, vehicleId: vehicleId ? Number(vehicleId) : null, approx: false } : r
+    ))
+  }
+  const removeRow = (key) => setRows((prev) => prev.filter((r) => r.key !== key))
+
+  // État d'une ligne : ce qui sera fait au moment de l'import
+  const rowState = (r) => {
+    if (r.error) return { code: 'error', label: r.error, color: C.red }
+    if (!r.vehicleId) return { code: 'unmatched', label: 'À rattacher', color: C.red }
+    const dup = existing[`${r.vehicleId}|${type}`]
+    if (dup?.length && !replace) return { code: 'skip', label: 'Déjà présent', color: C.muted }
+    if (dup?.length) return { code: 'replace', label: 'Remplacera', color: '#9A6B00' }
+    if (r.approx) return { code: 'approx', label: 'Rapprochement approché', color: '#9A6B00' }
+    return { code: 'ready', label: 'Prêt', color: C.green }
+  }
+
+  const queue = rows.filter((r) => ['ready', 'replace', 'approx'].includes(rowState(r).code))
+
+  const runImport = async () => {
+    setBusy(true)
+    setProgress(0)
+    const done = []
+    const failed = []
+    for (const r of queue) {
+      try {
+        await apiUpload(`/vehicles/${r.vehicleId}/documents`, r.file, {
+          type,
+          // Le marquage « à vérifier » des fichiers source est conservé
+          notes: /a\s*v[ée]rifier/i.test(r.file.name) ? 'À vérifier (source)' : '',
+        })
+        // Remplacement : l'ancien document n'est retiré qu'après succès
+        if (replace) {
+          for (const old of existing[`${r.vehicleId}|${type}`] || []) {
+            await apiFetch(`/documents/${old.id}`, { method: 'DELETE' })
+          }
+        }
+        done.push(r.key)
+      } catch (err) {
+        failed.push({ name: r.file.name, message: err.message })
+      }
+      setProgress((p) => p + 1)
+    }
+    setRows((prev) => prev.filter((r) => !done.includes(r.key)))
+    setReport({ ok: done.length, failed })
+    setBusy(false)
+    if (done.length) notify(`${done.length} document(s) importé(s)`, 'success')
+    onDone()
+  }
+
+  const counts = rows.reduce((acc, r) => {
+    const s = rowState(r).code
+    acc[s] = (acc[s] || 0) + 1
+    return acc
+  }, {})
+
+  return (
+    <Modal title="Import en masse de documents" onClose={onClose} width={860}>
+      <div style={{ display: 'grid', gap: 14 }}>
+        <p style={{ fontSize: 13.5, color: C.muted, lineHeight: 1.5 }}>
+          Sélectionnez les fichiers : chaque document est rattaché au véhicule
+          dont l'immatriculation apparaît dans le nom du fichier
+          (ex. <strong>FG-985-VD - CARTE GRISE.pdf</strong>). Les fichiers non
+          reconnus restent à rattacher manuellement.
+        </p>
+
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 220 }}>
+            <Field label="Type appliqué à tous les fichiers">
+              <select value={type} onChange={(e) => setType(e.target.value)} style={S.input}>
+                {DOC_TYPES.map((t) => <option key={t.code} value={t.code}>{t.label}</option>)}
+              </select>
+            </Field>
+          </div>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <Field label="Fichiers">
+              <input type="file" multiple accept={DOC_ACCEPT}
+                onChange={(e) => { addFiles([...e.target.files]); e.target.value = '' }}
+                style={{ ...S.input, padding: '8px 10px' }} />
+            </Field>
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13.5, paddingBottom: 10 }}>
+            <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} />
+            Remplacer les documents existants
+          </label>
+        </div>
+
+        {rows.length > 0 && (
+          <>
+            <div style={{ display: 'flex', gap: 14, fontSize: 12.5, color: C.muted, flexWrap: 'wrap' }}>
+              <span><strong style={{ color: C.ink }}>{rows.length}</strong> fichier(s)</span>
+              <span><strong style={{ color: C.green }}>{queue.length}</strong> à importer</span>
+              {counts.unmatched > 0 && <span style={{ color: C.red }}>{counts.unmatched} à rattacher</span>}
+              {counts.skip > 0 && <span>{counts.skip} déjà présent(s)</span>}
+              {counts.approx > 0 && <span style={{ color: '#9A6B00' }}>{counts.approx} rapprochement(s) approché(s) — à vérifier</span>}
+            </div>
+
+            {counts.approx > 0 && (
+              <div style={{
+                background: '#FDF3DC', border: '1px solid #E0C67A', borderRadius: 10,
+                padding: '10px 13px', fontSize: 13, lineHeight: 1.45,
+              }}>
+                <strong>{counts.approx} fichier(s) rapproché(s) de façon approchée</strong> —
+                l'immatriculation lue diffère d'un caractère de celle du véhicule proposé.
+                Vérifiez la colonne « Véhicule » avant d'importer.
+              </div>
+            )}
+
+            <div style={{
+              maxHeight: 340, overflow: 'auto', border: `1px solid ${C.border}`, borderRadius: 10,
+            }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+                <thead>
+                  <tr>
+                    {['Fichier', 'Immatriculation lue', 'Véhicule', 'Statut', ''].map((h) => (
+                      <th key={h} style={{
+                        ...thBase, textAlign: 'left', position: 'sticky', top: 0, zIndex: 1,
+                      }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const st = rowState(r)
+                    const v = r.vehicleId ? vehicleById[r.vehicleId] : null
+                    const manual = !v || r.approx
+                    return (
+                      <tr key={r.key}>
+                        <td style={{ ...cellSm, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {r.file.name}
+                          <div style={{ color: C.muted, fontSize: 11 }}>{fmtFileSize(r.file.size)}</div>
+                        </td>
+                        <td style={{ ...cellSm, fontFamily: FONT_MONO }}>{r.plate || '—'}</td>
+                        <td style={cellSm}>
+                          {manual ? (
+                            <select value={r.vehicleId || ''} onChange={(e) => setVehicle(r.key, e.target.value)}
+                              style={{ ...inSm, minWidth: 190 }}>
+                              <option value="">— choisir un véhicule —</option>
+                              {vehicles.map((veh) => (
+                                <option key={veh.id} value={veh.id}>
+                                  {veh.immatriculation || `#${veh.id}`} — {[veh.marque, veh.modele].filter(Boolean).join(' ')}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span style={{ fontFamily: FONT_MONO }}>{v.immatriculation}</span>
+                          )}
+                        </td>
+                        <td style={{ ...cellSm, color: st.color, fontWeight: 600 }}>{st.label}</td>
+                        <td style={{ ...cellSm, textAlign: 'right' }}>
+                          <button style={{ ...miniBtn2, padding: '3px 7px' }}
+                            onClick={() => removeRow(r.key)} title="Retirer de la liste">×</button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {report && (
+          <div style={{
+            background: C.bg, borderRadius: 10, padding: '12px 14px', fontSize: 13,
+          }}>
+            <strong>{report.ok} document(s) importé(s).</strong>
+            {report.failed.length > 0 && (
+              <ul style={{ marginTop: 8, paddingLeft: 18, color: C.red }}>
+                {report.failed.map((f) => <li key={f.name}>{f.name} — {f.message}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, alignItems: 'center' }}>
+          {busy && (
+            <span style={{ fontSize: 13, color: C.muted, marginRight: 'auto' }}>
+              Import en cours… {progress}/{queue.length}
+            </span>
+          )}
+          <button style={S.btn} onClick={onClose}>{report ? 'Fermer' : 'Annuler'}</button>
+          <button style={{ ...S.btn, ...S.btnPrimary }} disabled={busy || queue.length === 0}
+            onClick={runImport}>
+            {busy ? 'Import…' : `Importer ${queue.length} document(s)`}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════
+   Page Documents — état documentaire de toute la flotte
+   ════════════════════════════════════════════════════════════ */
+const DOC_FILTERS = [
+  { code: 'all', label: 'Tous les véhicules' },
+  { code: 'missing_cg', label: 'Sans carte grise' },
+  { code: 'missing_cb', label: 'Sans carte blanche' },
+  { code: 'expiring', label: 'Échéance sous 90 jours' },
+  { code: 'expired', label: 'Validité dépassée' },
+]
+
+/* Cellule d'un type de document dans le tableau : le fichier présent
+   (consulter / modifier l'échéance) ou un dépôt rapide. */
+function DocTypeCell({ doc, onConsult, onEdit, onAdd }) {
+  if (!doc) {
+    return (
+      <button style={{ ...miniBtn2, color: C.muted, fontSize: 12 }} onClick={onAdd}>
+        + Déposer
+      </button>
+    )
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <button style={{ ...miniBtn2, fontSize: 12 }} onClick={() => onConsult(doc)}
+        title={doc.filename}>📄 Consulter</button>
+      <button style={{ ...miniBtn2, fontSize: 12, padding: '5px 7px' }}
+        onClick={() => onEdit(doc)} title="Modifier l'échéance">✎</button>
+    </div>
+  )
+}
+
+function DocumentsPage({ categories, vehicles, onOpenVehicle }) {
+  const notify = useToast()
+  const [docs, setDocs] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [filter, setFilter] = useState('all')
+  const [importOpen, setImportOpen] = useState(false)
+  const [preview, setPreview] = useState(null)
+  const [editDoc, setEditDoc] = useState(null)
+  const [addFor, setAddFor] = useState(null)   // { vehicleId, type }
+
+  const load = useCallback(async () => {
+    try {
+      setDocs(await apiFetch('/documents'))
+    } catch (err) {
+      notify(err.message, 'error')
+    } finally {
+      setLoading(false)
+    }
+  }, [notify])
+
+  useEffect(() => { load() }, [load])
+
+  const categoryById = useMemo(
+    () => Object.fromEntries(categories.map((c) => [c.id, c])), [categories]
+  )
+  const byVehicle = useMemo(() => {
+    const map = {}
+    for (const d of docs) (map[d.vehicle_id] ||= []).push(d)
+    return map
+  }, [docs])
+
+  const docOf = (vehicleId, type) => (byVehicle[vehicleId] || []).find((d) => d.type === type)
+
+  // Compteurs d'en-tête
+  const stats = useMemo(() => {
+    const s = { cg: 0, cb: 0, expiring: 0, expired: 0 }
+    for (const v of vehicles) {
+      if (docOf(v.id, 'carte_grise')) s.cg++
+      if (docOf(v.id, 'carte_blanche')) s.cb++
+    }
+    for (const d of docs) {
+      const info = ctInfo(d.date_expiration)
+      if (!info) continue
+      if (info.days < 0) s.expired++
+      else if (info.days <= 90) s.expiring++
+    }
+    return s
+  }, [vehicles, docs, byVehicle])
+
+  const q = search.trim().toLowerCase()
+  const rows = vehicles.filter((v) => {
+    if (q && ![v.marque, v.modele, v.immatriculation].some((x) => (x || '').toLowerCase().includes(q))) {
+      return false
+    }
+    const list = byVehicle[v.id] || []
+    if (filter === 'missing_cg') return !docOf(v.id, 'carte_grise')
+    if (filter === 'missing_cb') return !docOf(v.id, 'carte_blanche')
+    if (filter === 'expiring') {
+      return list.some((d) => { const i = ctInfo(d.date_expiration); return i && i.days >= 0 && i.days <= 90 })
+    }
+    if (filter === 'expired') {
+      return list.some((d) => { const i = ctInfo(d.date_expiration); return i && i.days < 0 })
+    }
+    return true
+  })
+
+  return (
+    <div style={{ maxWidth: 1320, margin: '0 auto' }}>
+      <div style={{ marginBottom: 18 }}>
+        <h1 style={{ fontFamily: FONT_HEAD, fontSize: 24, fontWeight: 700 }}>Documents</h1>
+        <p style={{ fontSize: 14, color: C.muted, marginTop: 3 }}>
+          Cartes grises, cartes blanches et suivi des dates de validité — {vehicles.length} véhicules
+        </p>
+      </div>
+
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+        gap: 12, marginBottom: 18,
+      }}>
+        <Kpi label="Cartes grises" value={`${stats.cg} / ${vehicles.length}`}
+          sub={`${vehicles.length - stats.cg} manquante(s)`} mono
+          tone={stats.cg === vehicles.length ? 'ok' : 'warn'} />
+        <Kpi label="Cartes blanches" value={`${stats.cb} / ${vehicles.length}`}
+          sub={`${vehicles.length - stats.cb} manquante(s)`} mono
+          tone={stats.cb === vehicles.length ? 'ok' : 'warn'} />
+        <Kpi label="Échéances sous 90 j" value={String(stats.expiring)}
+          sub="documents à renouveler" mono tone={stats.expiring ? 'warn' : 'ok'} />
+        <Kpi label="Validité dépassée" value={String(stats.expired)}
+          sub="documents expirés" mono tone={stats.expired ? 'danger' : 'ok'} />
+      </div>
+
+      <div className="no-print" style={{
+        display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14,
+      }}>
+        <input placeholder="Rechercher (marque, modèle, immatriculation)…"
+          value={search} onChange={(e) => setSearch(e.target.value)}
+          style={{ ...S.input, maxWidth: 320 }} />
+        <select value={filter} onChange={(e) => setFilter(e.target.value)}
+          style={{ ...S.input, maxWidth: 230 }}>
+          {DOC_FILTERS.map((f) => <option key={f.code} value={f.code}>{f.label}</option>)}
+        </select>
+        <span style={{ fontSize: 13, color: C.muted }}>{rows.length} véhicule(s)</span>
+        <div style={{ flex: 1 }} />
+        <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setImportOpen(true)}>
+          ⇪ Import en masse
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: 'center', color: C.muted, padding: 60 }}>Chargement des documents…</div>
+      ) : (
+        <div className="tablewrap" style={{
+          background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12,
+          overflow: 'auto', boxShadow: '0 1px 3px rgba(0,0,0,.04)',
+        }}>
+          <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 900, fontSize: 13 }}>
+            <thead>
+              <tr>
+                {['Véhicule', 'Catégorie', 'Carte grise', 'Carte blanche', 'Fin de validité', 'Autres', ''].map((h, i) => (
+                  <th key={h} style={{
+                    ...thBase, textAlign: 'left', minWidth: [190, 130, 150, 150, 175, 80, 70][i],
+                    position: 'sticky', top: 0, zIndex: 2,
+                  }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 ? (
+                <tr><td colSpan={7} style={{ ...tdBase, color: C.muted, fontStyle: 'italic' }}>
+                  Aucun véhicule ne correspond à ce filtre.
+                </td></tr>
+              ) : rows.map((v) => {
+                const cat = categoryById[v.category_id]
+                const list = byVehicle[v.id] || []
+                const cb = docOf(v.id, 'carte_blanche')
+                const others = list.filter((d) => d.type === 'autre')
+                // Échéance affichée : la plus proche, tous documents confondus
+                const nextExpiry = list.map((d) => d.date_expiration).filter(Boolean).sort()[0]
+                return (
+                  <tr key={v.id}>
+                    <td style={tdBase}>
+                      <div style={{ fontFamily: FONT_MONO, fontWeight: 600 }}>
+                        {v.immatriculation || '—'}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: C.muted }}>
+                        {[v.marque, v.modele].filter(Boolean).join(' ') || '—'}
+                      </div>
+                    </td>
+                    <td style={tdBase}>
+                      {cat && (
+                        <span style={{
+                          background: cat.color, color: C.black, fontSize: 11,
+                          fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                        }}>{cat.name}</span>
+                      )}
+                    </td>
+                    <td style={tdBase}>
+                      <DocTypeCell doc={docOf(v.id, 'carte_grise')}
+                        onConsult={setPreview} onEdit={setEditDoc}
+                        onAdd={() => setAddFor({ vehicleId: v.id, type: 'carte_grise' })} />
+                    </td>
+                    <td style={tdBase}>
+                      <DocTypeCell doc={cb}
+                        onConsult={setPreview} onEdit={setEditDoc}
+                        onAdd={() => setAddFor({ vehicleId: v.id, type: 'carte_blanche' })} />
+                    </td>
+                    <td style={tdBase}>
+                      <ExpiryPill date={nextExpiry} empty={cb ? 'Non renseignée' : '—'} />
+                    </td>
+                    <td style={{ ...tdBase, color: others.length ? C.ink : C.muted }}>
+                      {others.length || '—'}
+                    </td>
+                    <td style={tdBase}>
+                      <button style={{ ...miniBtn2, fontSize: 12 }}
+                        onClick={() => onOpenVehicle(v.id)}>Fiche →</button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {importOpen && (
+        <ImportDocsModal
+          vehicles={vehicles} docs={docs}
+          onClose={() => setImportOpen(false)} onDone={load}
+        />
+      )}
+      {preview && <DocPreviewModal doc={preview} onClose={() => setPreview(null)} />}
+      {editDoc && (
+        <DocumentModal
+          vehicleId={editDoc.vehicle_id} doc={editDoc}
+          onClose={() => setEditDoc(null)}
+          onSaved={() => { setEditDoc(null); load() }}
+        />
+      )}
+      {addFor && (
+        <DocumentModal
+          vehicleId={addFor.vehicleId} defaultType={addFor.type}
+          onClose={() => setAddFor(null)}
+          onSaved={() => { setAddFor(null); load() }}
+        />
+      )}
+    </div>
+  )
 }
 
 /* ════════════════════════════════════════════════════════════

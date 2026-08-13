@@ -14,6 +14,11 @@ contrôles techniques et historique des interventions de chaque véhicule.
 - **Interventions** : date, kilométrage, mécanicien(s) et lignes de pièces
   (type, désignation, fournisseur, quantité, prix unitaire) avec total HT
   automatique. Ajout, modification, suppression.
+- **Documents** : cartes grises et cartes blanches (autorisation de mise en
+  service) stockées par véhicule, avec **suivi des dates de fin de validité**
+  (pastille J-xx, alerte à 90 et 30 jours). Consultation dans l'application,
+  téléchargement, et **import en masse** d'un lot de fichiers rattachés
+  automatiquement par immatriculation lue dans le nom du fichier.
 - **Présence Pérols** : feuille de présence hebdomadaire (gestion de l'équipe,
   tableau NOM × jours avec codes de présence), enregistrement automatique.
 - **Impression** des tableaux (flotte et présence) et **envoi automatique** à
