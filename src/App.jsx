@@ -194,6 +194,29 @@ async function fetchDocBlob(id) {
   return res.blob()
 }
 
+/* Export groupé en ZIP (toutes les cartes grises, par ex.). Même contrainte
+   que l'aperçu : l'API réclame le JWT, un simple lien ne peut donc pas
+   fonctionner — on récupère l'archive en blob puis on déclenche la sauvegarde. */
+async function downloadDocsArchive(type, fallbackName) {
+  const token = localStorage.getItem('flotte-token')
+  const res = await fetch(`${API}/documents/export?type=${encodeURIComponent(type)}`, {
+    headers: token ? { Authorization: 'Bearer ' + token } : {},
+  })
+  if (!res.ok) throw await apiError(res)
+  const blob = await res.blob()
+  const disposition = res.headers.get('Content-Disposition') || ''
+  const named = /filename="([^"]+)"/.exec(disposition)
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = named ? named[1] : fallbackName
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 60000)
+  return blob.size
+}
+
 /* ════════════════════════════════════════════════════════════
    Helpers
    ════════════════════════════════════════════════════════════ */
@@ -2798,6 +2821,7 @@ function DocumentsPage({ categories, vehicles, onOpenVehicle }) {
   const [preview, setPreview] = useState(null)
   const [editDoc, setEditDoc] = useState(null)
   const [addFor, setAddFor] = useState(null)   // { vehicleId, type }
+  const [exporting, setExporting] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -2810,6 +2834,21 @@ function DocumentsPage({ categories, vehicles, onOpenVehicle }) {
   }, [notify])
 
   useEffect(() => { load() }, [load])
+
+  // Archive ZIP de toutes les cartes grises (plusieurs dizaines de Mo :
+  // le bouton reste bloqué le temps que l'API assemble et transmette).
+  const exportCartesGrises = async () => {
+    setExporting(true)
+    notify('Préparation de l’archive… cela peut prendre un moment.', 'info')
+    try {
+      const size = await downloadDocsArchive('carte_grise', 'cartes-grises.zip')
+      notify(`Archive téléchargée (${fmtFileSize(size)}).`, 'success')
+    } catch (err) {
+      notify(err.message, 'error')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   const categoryById = useMemo(
     () => Object.fromEntries(categories.map((c) => [c.id, c])), [categories]
@@ -2824,12 +2863,13 @@ function DocumentsPage({ categories, vehicles, onOpenVehicle }) {
 
   // Compteurs d'en-tête
   const stats = useMemo(() => {
-    const s = { cg: 0, cb: 0, expiring: 0, expired: 0 }
+    const s = { cg: 0, cb: 0, expiring: 0, expired: 0, cgFiles: 0 }
     for (const v of vehicles) {
       if (docOf(v.id, 'carte_grise')) s.cg++
       if (docOf(v.id, 'carte_blanche')) s.cb++
     }
     for (const d of docs) {
+      if (d.type === 'carte_grise') s.cgFiles++
       const info = ctInfo(d.date_expiration)
       if (!info) continue
       if (info.days < 0) s.expired++
@@ -2892,6 +2932,14 @@ function DocumentsPage({ categories, vehicles, onOpenVehicle }) {
         </select>
         <span style={{ fontSize: 13, color: C.muted }}>{rows.length} véhicule(s)</span>
         <div style={{ flex: 1 }} />
+        <button style={{ ...S.btn, opacity: exporting || !stats.cgFiles ? 0.55 : 1 }}
+          disabled={exporting || !stats.cgFiles}
+          title={stats.cgFiles
+            ? `Télécharger les ${stats.cgFiles} cartes grises dans une archive ZIP`
+            : 'Aucune carte grise enregistrée'}
+          onClick={exportCartesGrises}>
+          {exporting ? '⏳ Préparation…' : `⬇ Cartes grises (${stats.cgFiles})`}
+        </button>
         <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setImportOpen(true)}>
           ⇪ Import en masse
         </button>

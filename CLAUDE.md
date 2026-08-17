@@ -129,6 +129,9 @@ everywhere without being persisted — pick `AS` (or any code) to override.
     skipped into replaced (the old row is deleted **after** the new upload
     succeeds). Files named « … A VERIFIER » land with an `À vérifier (source)`
     note. `api/importDocuments.js` is the CLI twin of this screen.
+  - **Bulk download** — a « ⬇ Cartes grises (n) » button next to the import
+    button fetches `GET /api/documents/export?type=carte_grise` as a **blob**
+    (the JWT rules out a plain link, same as the preview) and saves the ZIP.
   - **`VehicleDocuments`** = the same documents on the vehicle sheet (between
     the identity card and the intervention history), with empty *slots* for a
     missing carte grise / carte blanche, plus preview / edit / delete.
@@ -219,6 +222,12 @@ everywhere without being persisted — pick `AS` (or any code) to override.
     metadata in the query string (`type`, `filename`, `delivrance`,
     `expiration`, `numero`, `notes`). No multipart parser, no extra dependency
   - `GET /api/documents/:id/file` — the bytes, `Content-Disposition: inline`
+  - `GET /api/documents/export?type=carte_grise` — every document of that type
+    (`all` = the lot) as a **ZIP streamed on the fly**, entries named
+    `PLAQUE - CARTE GRISE.pdf`. `api/zip.js` is a ~150-line store-mode ZIP
+    writer (no compression — PDFs/JPEGs already are; no extra dependency); the
+    route loads one `BYTEA` at a time so the ~160 MB never sit in memory, and
+    stops early if the client disconnects
   - `PUT/DELETE /api/documents/:id` — metadata only (the file itself never
     changes: delete and re-upload)
   - `POST /api/interventions`, `PUT/DELETE /api/interventions/:id`
@@ -282,7 +291,8 @@ cartes grises), which Postgres TOASTs transparently. Server cap is 20 MB per
 file; `nginx.conf` allows `client_max_body_size 25m` on `/api/` (it was 2 MB and
 would otherwise reject every upload). Doc types: `carte_grise`, `carte_blanche`,
 `autre`. Only `date_expiration` drives the expiry tracking — a carte grise has
-no expiry, a carte blanche does.
+no expiry, a carte blanche does. Bulk retrieval goes through
+`GET /api/documents/export` (ZIP, see the endpoint list).
 
 **`api/importDocuments.js`** — bulk import from a folder, the CLI twin of
 `ImportDocsModal` (same `plateFromFilename` / `normalizePlate` / `editDistance`

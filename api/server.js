@@ -3,6 +3,7 @@ import cors from "cors";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import pool, { initDB } from "./db.js";
+import ZipWriter from "./zip.js";
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000");
@@ -445,6 +446,78 @@ app.post("/api/vehicles/:id/documents", rawUpload, wrap(async (req, res) => {
   res.json(rows[0]);
 }));
 
+// Export groupé : toutes les pièces d'un type dans une archive ZIP
+// (?type=carte_grise par défaut, `all` pour tout prendre).
+// L'archive est écrite à la volée, document par document : on ne charge
+// jamais les ~160 Mo de cartes grises en mémoire d'un seul tenant.
+const EXPORT_LABELS = {
+  carte_grise: "CARTE GRISE",
+  carte_blanche: "CARTE BLANCHE",
+  autre: "AUTRE",
+};
+const EXPORT_ARCHIVES = {
+  carte_grise: "cartes-grises",
+  carte_blanche: "cartes-blanches",
+  autre: "autres-documents",
+};
+const EXT_BY_MIME = {
+  "application/pdf": ".pdf",
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+};
+// « AA-123-BB - CARTE GRISE.pdf » — nom reconstruit depuis la plaque plutôt
+// que repris du fichier source, pour une archive homogène et triable.
+function exportEntryName(row) {
+  // Pas de repli « document » ici : une plaque absente doit rester vide pour
+  // qu'on retombe sur le nom d'origine du fichier.
+  const plate = String(row.immatriculation || "").replace(/[^\w -]/g, "").trim();
+  const known = EXT_BY_MIME[row.mime];
+  const fromName = /\.[a-z0-9]{2,5}$/i.exec(row.filename || "");
+  const ext = known || (fromName ? fromName[0].toLowerCase() : ".bin");
+  const label = EXPORT_LABELS[row.type] || "DOCUMENT";
+  const base = plate ? `${plate} - ${label}` : safeFilename(row.filename).replace(/\.[^.]*$/, "");
+  return `${base}${ext}`;
+}
+
+app.get("/api/documents/export", wrap(async (req, res) => {
+  const raw = String(req.query.type || "carte_grise").trim();
+  const type = raw === "all" ? null : parseDocType(raw);
+  const { rows } = await pool.query(
+    `SELECT d.id, d.type, d.filename, d.mime, d.created_at, v.immatriculation
+       FROM vehicle_documents d
+       LEFT JOIN vehicles v ON v.id = d.vehicle_id
+      ${type ? "WHERE d.type = $1" : ""}
+      ORDER BY v.immatriculation NULLS LAST, d.type, d.created_at`,
+    type ? [type] : []
+  );
+  if (!rows.length) {
+    return res.status(404).json({ error: "Aucun document à exporter." });
+  }
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  const archive = type ? EXPORT_ARCHIVES[type] : "documents";
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="flotte-${archive}-${stamp}.zip"`
+  );
+
+  const zip = new ZipWriter(res);
+  for (const row of rows) {
+    if (zip.aborted) return;   // client parti : on relâche la connexion DB
+    // Une requête par pièce : le BYTEA n'est chargé qu'au moment de l'écrire.
+    const { rows: [file] } = await pool.query(
+      "SELECT data FROM vehicle_documents WHERE id=$1", [row.id]
+    );
+    if (!file || !file.data) continue;
+    await zip.add(exportEntryName(row), file.data, row.created_at);
+  }
+  await zip.finish();
+  res.end();
+}));
+
 // Contenu du document (aperçu / téléchargement)
 app.get("/api/documents/:id/file", wrap(async (req, res) => {
   const { rows } = await pool.query(
@@ -879,6 +952,9 @@ app.use((err, _req, res, _next) => {
     return res.status(413).json({ error: "Fichier trop volumineux (20 Mo maximum)." });
   }
   console.error(err);
+  // Réponse déjà entamée (export ZIP en flux, par ex.) : on ne peut plus
+  // écrire d'en-têtes, on coupe la connexion pour que le client voie l'échec.
+  if (res.headersSent) return res.destroy();
   res.status(500).json({ error: err.message || "Erreur serveur" });
 });
 
