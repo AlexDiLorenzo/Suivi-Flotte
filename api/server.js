@@ -120,47 +120,16 @@ app.put("/api/auth/credentials", loginRateLimit, auth, wrap(async (req, res) => 
 }));
 
 // ── Comptes de l'application ────────────────────────────────
-// L'application n'a pas de rôles : tout compte connecté dispose des
-// mêmes droits et peut donc créer ou retirer un autre compte.
+// Les comptes ne se creent PLUS depuis l'application : ils sont declares dans
+// api/db.js et leur mot de passe vient du .env du serveur. Cette route ne sert
+// qu'a AFFICHER qui a acces — l'ecran correspondant est en lecture seule.
+//
+// Pourquoi : l'application n'a aucun niveau de droits, donc n'importe quel
+// compte pouvait en creer ou en supprimer d'autres, y compris celui d'un
+// administrateur. La gestion est desormais centralisee.
 app.get("/api/auth/users", auth, wrap(async (_req, res) => {
-  const { rows } = await pool.query("SELECT id, username FROM users ORDER BY id");
+  const { rows } = await pool.query("SELECT id, username FROM users ORDER BY username");
   res.json(rows);
-}));
-
-app.post("/api/auth/users", loginRateLimit, auth, wrap(async (req, res) => {
-  const username = String(req.body?.username || "").trim();
-  const password = String(req.body?.password || "");
-  if (!username) return res.status(400).json({ error: "Identifiant requis" });
-  if (password.length < 12) {
-    return res.status(400).json({ error: "Mot de passe : 12 caractères minimum" });
-  }
-  const hash = await bcrypt.hash(password, 10);
-  try {
-    const { rows } = await pool.query(
-      "INSERT INTO users (username, password_hash) VALUES ($1,$2) RETURNING id, username",
-      [username, hash]
-    );
-    res.json(rows[0]);
-  } catch (err) {
-    if (err.code === "23505") return res.status(409).json({ error: "Cet identifiant est déjà pris" });
-    throw err;
-  }
-}));
-
-app.delete("/api/auth/users/:id", auth, wrap(async (req, res) => {
-  const { rows } = await pool.query("SELECT id, username FROM users WHERE id=$1", [req.params.id]);
-  if (!rows.length) return res.status(404).json({ error: "Compte introuvable" });
-  // Deux garde-fous : on ne supprime ni son propre compte (déconnexion
-  // immédiate et confuse), ni le dernier — sinon plus personne n'entre.
-  if (rows[0].username === req.user.username) {
-    return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte" });
-  }
-  const { rows: count } = await pool.query("SELECT COUNT(*)::int AS n FROM users");
-  if (count[0].n <= 1) {
-    return res.status(400).json({ error: "Impossible de supprimer le dernier compte" });
-  }
-  await pool.query("DELETE FROM users WHERE id=$1", [req.params.id]);
-  res.json({ ok: true });
 }));
 
 // ── Toutes les routes de données nécessitent l'authentification ──

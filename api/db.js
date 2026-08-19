@@ -1,5 +1,47 @@
 import pg from "pg";
+import bcrypt from "bcryptjs";
 import { categoriesSeed, vehiclesSeed, interventionsSeed } from "./seedData.js";
+
+// ── Comptes applicatifs ──────────────────────────────────────
+// Les comptes ne se créent PAS depuis l'application : ils sont déclarés ici et
+// leur mot de passe vient du .env du serveur (/srv/flotte/.env), réappliqué à
+// chaque démarrage. Même mécanisme que Depantime et Caisse.
+//
+// Ajouter quelqu'un : une ligne ici, une ligne FL_PASS_<PRENOM> dans le .env,
+// puis `cd /srv/flotte && docker compose up -d`.
+//
+// Sans variable d'environnement, le compte n'est pas créé — jamais de mot de
+// passe par défaut, jamais de compte au mot de passe vide.
+const DEFAULT_USERS = [
+  { username: "alexandre", envKey: "FL_PASS_ALEXANDRE" },
+  { username: "norbert",   envKey: "FL_PASS_NORBERT" },
+  { username: "Franck",    envKey: "FL_PASS_FRANCK" },
+  { username: "aurelien",  envKey: "FL_PASS_AURELIEN" },
+];
+
+async function seedUsers(client) {
+  for (const u of DEFAULT_USERS) {
+    const motDePasse = process.env[u.envKey];
+    if (!motDePasse) continue;
+    const hash = await bcrypt.hash(motDePasse, 10);
+    await client.query(
+      `INSERT INTO users (username, password_hash) VALUES ($1,$2)
+       ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash`,
+      [u.username, hash]
+    );
+  }
+  // Les comptes présents en base mais absents de la liste sont signalés, pas
+  // supprimés : une suppression automatique sur une faute de frappe dans le
+  // .env enfermerait tout le monde dehors.
+  const declares = DEFAULT_USERS.map((u) => u.username);
+  const { rows } = await client.query("SELECT username FROM users ORDER BY username");
+  const orphelins = rows.map((r) => r.username).filter((n) => !declares.includes(n));
+  if (orphelins.length) {
+    console.warn(
+      `[flotte] comptes hors liste (ni crees ni supprimes par le demarrage) : ${orphelins.join(", ")}`
+    );
+  }
+}
 
 // Migration : convertit l'ancien planning mois/jour en date ISO complète
 // (prochaine occurrence à venir). Le jour est borné au dernier jour du mois.
@@ -300,6 +342,8 @@ export async function initDB() {
         v.id,
       ]);
     }
+
+    await seedUsers(client);
 
     console.log("Database initialized");
   } finally {
