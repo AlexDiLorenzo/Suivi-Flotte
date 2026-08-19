@@ -974,48 +974,93 @@ function LoginScreen({ onAuth }) {
     }
   }
 
+  // Gabarit commun à toutes les applications :
+  // PLATEFORME_APPLICATIONS/brand/patterns/ecran-connexion.jsx
+  // Le fond était vert plein : l'ovale vert du logo s'y fondait.
+  const T = {
+    fond: '#F1EFE8', carte: '#fff', bord: '#D3D1C7', encre: '#1A190F',
+    gris: '#888780', grisFonce: '#5F5E5A', vert: '#2C6126',
+    jaune: '#E4E13C', rouge: '#A32D2D',
+    titre: "'Space Mono', monospace", corps: "'DM Sans', sans-serif",
+  }
+  const styleChamp = {
+    width: '100%', padding: '10px 12px', borderRadius: 8,
+    border: `1px solid ${T.bord}`, fontSize: 14, fontFamily: T.corps,
+    margin: '6px 0 12px', boxSizing: 'border-box',
+  }
+  const styleLabel = {
+    fontSize: 10, fontWeight: 700, color: T.gris,
+    textTransform: 'uppercase', letterSpacing: '0.07em',
+  }
+
   return (
     <div style={{
       minHeight: '100vh', display: 'flex', alignItems: 'center',
-      justifyContent: 'center', background: C.green, padding: 20,
+      justifyContent: 'center', background: T.fond,
+      fontFamily: T.corps, padding: 20,
     }}>
-      <div style={{
-        background: C.panel, borderRadius: 18, padding: '38px 34px',
-        width: '100%', maxWidth: 380, boxShadow: '0 24px 60px rgba(0,0,0,.32)',
+      <form onSubmit={submit} style={{
+        background: T.carte, borderRadius: 12, padding: 36,
+        width: 360, maxWidth: '100%', border: `1px solid ${T.bord}`,
+        boxShadow: '0 10px 40px rgba(26,25,15,0.15)',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 6 }}>
-          <Logo size={42} />
-          <div>
-            <div style={{ fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 20, lineHeight: 1 }}>FLOTTE</div>
-            <div style={{ fontSize: 12, color: C.muted }}>Montpellier Dépannage</div>
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          gap: 12, marginBottom: 24,
+        }}>
+          <img src="/logo.png" alt="Montpellier Dépannage"
+               style={{ width: 168, maxWidth: '100%', height: 'auto' }} />
+          <div style={{ textAlign: 'center' }}>
+            <div style={{
+              fontSize: 22, fontWeight: 700, fontFamily: T.titre,
+              color: T.encre, letterSpacing: '-0.02em',
+            }}>Flotte</div>
+            <div style={{
+              fontSize: 10, color: T.gris, textTransform: 'uppercase',
+              letterSpacing: '0.1em', fontWeight: 700,
+            }}>Véhicules et équipements</div>
           </div>
         </div>
-        <p style={{ fontSize: 14, color: C.muted, margin: '16px 0 20px' }}>
-          {mode === 'setup'
-            ? 'Première utilisation — créez le compte administrateur.'
-            : 'Connectez-vous pour accéder au suivi de la flotte.'}
-        </p>
-        <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <Field label="Identifiant">
-            <input style={S.input} value={username} autoFocus
-              onChange={(e) => setUsername(e.target.value)} />
-          </Field>
-          <Field label="Mot de passe">
-            <input style={S.input} type="password" value={password}
-              onChange={(e) => setPassword(e.target.value)} />
-            {mode === 'setup' && (
-              <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
-                12 caractères minimum.
-              </div>
-            )}
-          </Field>
-          {error && <div style={{ color: C.red, fontSize: 13, fontWeight: 600 }}>{error}</div>}
-          <button type="submit" disabled={busy || !mode}
-            style={{ ...S.btn, ...S.btnPrimary, justifyContent: 'center', padding: '11px', marginTop: 4 }}>
-            {busy ? '…' : mode === 'setup' ? 'Créer le compte' : 'Se connecter'}
-          </button>
-        </form>
-      </div>
+
+        {mode === 'setup' && (
+          <p style={{ fontSize: 12, color: T.grisFonce, textAlign: 'center', marginBottom: 16 }}>
+            Première utilisation — créez le compte administrateur.
+          </p>
+        )}
+
+        <label style={styleLabel}>Identifiant</label>
+        <input value={username} autoFocus autoComplete="username" required
+               onChange={(e) => setUsername(e.target.value)} style={styleChamp} />
+
+        <label style={styleLabel}>Mot de passe</label>
+        <input type="password" value={password} autoComplete="current-password" required
+               onChange={(e) => setPassword(e.target.value)}
+               style={{ ...styleChamp, margin: mode === 'setup' ? '6px 0 6px' : '6px 0 20px' }} />
+        {mode === 'setup' && (
+          <div style={{ fontSize: 12, color: T.grisFonce, marginBottom: 16 }}>
+            12 caractères minimum.
+          </div>
+        )}
+
+        {error && <p style={{ color: T.rouge, fontSize: 12, marginBottom: 12 }}>{error}</p>}
+
+        <button type="submit" disabled={busy || !mode} style={{
+          width: '100%', padding: '12px 0', borderRadius: 8, border: 'none',
+          background: T.vert, color: '#fff', fontWeight: 700, fontSize: 14,
+          fontFamily: T.corps, cursor: busy ? 'wait' : 'pointer',
+          boxShadow: '0 4px 14px rgba(44,97,38,0.30)',
+        }}>
+          {busy ? '…' : mode === 'setup' ? 'Créer le compte' : 'Se connecter'}
+        </button>
+
+        <div style={{
+          marginTop: 18, padding: '8px 12px', background: T.jaune,
+          borderRadius: 6, fontSize: 11, color: T.encre, fontWeight: 700,
+          textAlign: 'center',
+        }}>
+          24 / 7 · DÉPANNAGE MONTPELLIER
+        </div>
+      </form>
     </div>
   )
 }
