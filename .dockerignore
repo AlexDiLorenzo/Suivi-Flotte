@@ -3,3 +3,10 @@ dist
 api
 .env
 npm-debug.log
+
+# Données PostgreSQL du serveur : le volume est monté dans le répertoire du
+# projet, donc dans le contexte de build. Les fichiers appartiennent à l'utilisateur
+# postgres du conteneur, et « docker compose build » lancé sans sudo s'arrête sur
+# « permission denied » avant même de construire. Rien de tout cela n'a sa place
+# dans l'image.
+postgres
