@@ -22,6 +22,12 @@ services:
       - RESEND_FROM=${FL_RESEND_FROM}
       - MAIL_TO=${FL_MAIL_TO:-compta@montpellierdepannage.com}
       - PILOTAGE_SECRET=${FL_PILOTAGE_SECRET:-}
+      # Comptes applicatifs : la liste est dans api/db.js, les mots de passe
+      # dans le .env du serveur. Une variable absente = compte non créé.
+      - FL_PASS_ALEXANDRE=${FL_PASS_ALEXANDRE:-}
+      - FL_PASS_NORBERT=${FL_PASS_NORBERT:-}
+      - FL_PASS_FRANCK=${FL_PASS_FRANCK:-}
+      - FL_PASS_AURELIEN=${FL_PASS_AURELIEN:-}
     expose: ["3000"]
     networks: [flotte-net, web]
     depends_on: [flotte-db]

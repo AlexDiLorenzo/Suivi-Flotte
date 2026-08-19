@@ -25,8 +25,9 @@ contrôles techniques et historique des interventions de chaque véhicule.
   `compta@montpellierdepannage.com` (via Resend).
 - Connexion sécurisée (JWT), données partagées via PostgreSQL.
 - **Comptes** : plusieurs utilisateurs possibles, tous avec les mêmes droits.
-  Création et suppression depuis « Mon compte » (mot de passe : 12 caractères
-  minimum).
+  Ils ne se créent **pas** depuis l'application : la liste est déclarée dans
+  `api/db.js` et les mots de passe viennent du `.env` du serveur
+  (`FL_PASS_<PRENOM>`), réappliqués à chaque démarrage.
 
 ## Démarrage en local
 
@@ -46,13 +47,13 @@ Le serveur Vite redirige `/api` vers `http://localhost:3000`.
 ## Déploiement (Docker)
 
 ```bash
-cp .env.example .env     # renseigner FL_DB_PASSWORD et FL_JWT_SECRET
+cp .env.example .env     # FL_DB_PASSWORD, FL_JWT_SECRET, FL_PASS_<PRENOM>
 docker compose up -d --build
 ```
 
 Trois conteneurs : `flotte-front` (nginx), `flotte-api` (Node), `flotte-db`
-(PostgreSQL). À la première connexion, l'application propose de créer le compte
-administrateur.
+(PostgreSQL). Les comptes déclarés dans `api/db.js` dont le `FL_PASS_<PRENOM>`
+est renseigné sont créés (ou leur mot de passe remis à jour) à chaque démarrage.
 
 ## Données de départ
 
