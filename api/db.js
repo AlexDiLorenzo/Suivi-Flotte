@@ -15,6 +15,7 @@ import { categoriesSeed, vehiclesSeed, interventionsSeed } from "./seedData.js";
 const DEFAULT_USERS = [
   { username: "alexandre", envKey: "FL_PASS_ALEXANDRE" },
   { username: "norbert",   envKey: "FL_PASS_NORBERT" },
+  { username: "marie",     envKey: "FL_PASS_MARIE" },
   { username: "Franck",    envKey: "FL_PASS_FRANCK" },
   { username: "aurelien",  envKey: "FL_PASS_AURELIEN" },
 ];
