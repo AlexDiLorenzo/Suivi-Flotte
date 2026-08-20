@@ -914,6 +914,40 @@ app.get("/api/pilotage-public/snapshot", wrap(async (req, res) => {
   res.json({ ts: Date.now(), ...rows[0] });
 }));
 
+// ── Équipe de Pérols, pour HABILITATION ─────────────────────
+// Le suivi des habilitations (formations.alex-worksmart.com) tient sa liste de
+// dépanneurs à jour depuis DepanTime pour Montpellier, et depuis ici pour
+// Pérols : cette équipe n'existe que dans Flotte. Lecture seule, auth par
+// secret partagé comme /pilotage-public — le consommateur est un serveur.
+//
+// `presence_drivers` ne connaît pas la notion d'archive : une personne retirée
+// de l'équipe disparaît de la table. Le consommateur en tire les conséquences.
+app.get("/api/habilitation-public/depanneurs", wrap(async (req, res) => {
+  const secret = process.env.HABILITATION_SECRET;
+  if (!secret) return res.status(503).json({ error: "Synchronisation non configurée" });
+  if ((req.headers.authorization || "") !== `Bearer ${secret}`) {
+    return res.status(401).json({ error: "Non autorisé" });
+  }
+  const { rows } = await pool.query(
+    "SELECT id, nom, categorie FROM presence_drivers ORDER BY categorie, position, id"
+  );
+  res.json({
+    ts: Date.now(),
+    site: "perols",
+    depanneurs: rows.map((r) => ({
+      id: String(r.id),
+      site_id: "perols",
+      // L'équipe de Pérols ne tient qu'un patronyme, pas de prénom.
+      nom: r.nom || "",
+      prenom: "",
+      poste: r.categorie || "",
+      email: "",
+      // Aucune notion d'actif/archivé ici : présent dans la table = en poste.
+      active: true,
+    })),
+  });
+}));
+
 // ── Gestion d'erreurs ───────────────────────────────────────
 app.use((err, _req, res, _next) => {
   // Dépôt de document au-delà de la limite acceptée (body-parser)
