@@ -9,6 +9,12 @@ services:
     build: ./api
     container_name: flotte-api
     restart: unless-stopped
+    # Tout /srv/flotte/.env est transmis au conteneur : c'est ce qui apporte les
+    # FL_PASS_* dont api/db.js a besoin pour creer les comptes. Sans cette
+    # ligne, la liste declarative est inerte — les variables existent sur le
+    # serveur mais n'atteignent jamais l'application, silencieusement.
+    env_file:
+      - .env
     environment:
       - DB_HOST=flotte-db
       - DB_PORT=5432
@@ -22,6 +28,9 @@ services:
       - RESEND_FROM=${FL_RESEND_FROM}
       - MAIL_TO=${FL_MAIL_TO:-compta@montpellierdepannage.com}
       - PILOTAGE_SECRET=${FL_PILOTAGE_SECRET:-}
+      # Secret partagé avec HABILITATION, qui lit l'équipe de Pérols
+      # pour tenir sa liste de dépanneurs à jour. Vide = endpoint fermé.
+      - HABILITATION_SECRET=${FL_HABILITATION_SECRET:-}
       # Comptes applicatifs : la liste est dans api/db.js, les mots de passe
       # dans le .env du serveur. Une variable absente = compte non créé.
       - FL_PASS_ALEXANDRE=${FL_PASS_ALEXANDRE:-}
