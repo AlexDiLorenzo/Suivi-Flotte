@@ -17,6 +17,7 @@ const DEFAULT_USERS = [
   { username: "norbert",   envKey: "FL_PASS_NORBERT" },
   { username: "marie",     envKey: "FL_PASS_MARIE" },
   { username: "sandrine",  envKey: "FL_PASS_SANDRINE" },
+  { username: "ilies",     envKey: "FL_PASS_ILIES" },
   { username: "Franck",    envKey: "FL_PASS_FRANCK" },
   { username: "aurelien",  envKey: "FL_PASS_AURELIEN" },
 ];

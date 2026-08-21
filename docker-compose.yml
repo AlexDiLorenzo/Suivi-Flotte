@@ -35,6 +35,7 @@ services:
       # dans le .env du serveur. Une variable absente = compte non créé.
       - FL_PASS_ALEXANDRE=${FL_PASS_ALEXANDRE:-}
       - FL_PASS_NORBERT=${FL_PASS_NORBERT:-}
+      - FL_PASS_ILIES=${FL_PASS_ILIES:-}
       - FL_PASS_FRANCK=${FL_PASS_FRANCK:-}
       - FL_PASS_AURELIEN=${FL_PASS_AURELIEN:-}
     expose: ["3000"]
